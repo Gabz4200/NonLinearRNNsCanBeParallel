@@ -1,0 +1,12 @@
+defaults:
+  - model
+  - data
+  - trainer
+  - runtime
+  - _self_
+
+# Optional: override specific keys here
+fast_dev_run: false
+callbacks:
+  model_checkpoint: true
+  early_stopping: true

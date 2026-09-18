@@ -1,0 +1,21 @@
+# Pyrefly type-check configuration.
+# Project layout: importable package lives in src/ (see pyproject [tool.pytest.ini_options] pythonpath
+# and [tool.ruff] src). Python floor is 3.11 (see requires-python and [tool.mypy]).
+
+search-path = ["src"]
+python-version = "3.11"
+
+project-includes = [
+    "src/**/*.py",
+    "tests/**/*.py",
+    "scripts/**/*.py",
+    "benchmarks/**/*.py",
+]
+
+project-excludes = [
+    ".venv/**",
+    ".ruff_cache/**",
+    ".pytest_cache/**",
+    "outputs/**",
+    "notebooks/**",
+]

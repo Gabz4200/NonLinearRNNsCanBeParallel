@@ -1,0 +1,6 @@
+runtime:
+  seed: 42
+  matmul_precision: "high"
+  taichi_arch: "cpu"
+  compile: false
+  compile_mode: "default"
