@@ -1,0 +1,9 @@
+data:
+  task: "sorted_graph_connectivity"
+  max_nodes: 32
+  num_samples: 10000
+  val_split: 0.1
+  test_split: 0.1
+  batch_size: 32
+  num_workers: 4
+  max_seq_len: 66
