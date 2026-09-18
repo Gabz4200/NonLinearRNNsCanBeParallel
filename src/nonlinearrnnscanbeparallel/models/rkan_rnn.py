@@ -101,16 +101,16 @@ class RKANRNN(BaseRNNModel):
         if state is None:
             state = self.init_state(batch, x.device)
 
-        new_states = []
+        new_states_list: list[RNNState] = []
         for rnn_layer_idx, layer_pair in enumerate(self.layers):
             rnn_layer, ff_layer = layer_pair
             x, new_state = rnn_layer(x, state[rnn_layer_idx])
-            new_states.append(new_state)
+            new_states_list.append(new_state)
             x = ff_layer(x)
 
         x = self.final_norm(x)
         logits = self.classifier(x)
-        return logits, new_states
+        return logits, RNNStateList.from_list(new_states_list)
 
     def step(
         self, x_t: torch.Tensor, state: RNNStateList | None = None
@@ -121,22 +121,23 @@ class RKANRNN(BaseRNNModel):
         if state is None:
             state = self.init_state(x_t.shape[0], x_t.device)
 
-        new_states: RNNStateList = []
+        new_states_list: list[RNNState] = []
         for rnn_layer_idx, layer_pair in enumerate(self.layers):
             rnn_layer, ff_layer = layer_pair
             x_t, new_state = rnn_layer.step(x_t, state[rnn_layer_idx])
-            new_states.append(new_state)
+            new_states_list.append(new_state)
             x_t = ff_layer(x_t)
 
-        return self.classifier(self.final_norm(x_t)), new_states
+        return self.classifier(self.final_norm(x_t)), RNNStateList.from_list(new_states_list)
 
     def init_state(self, batch_size: int, device: torch.device) -> RNNStateList:
-
-        return [
-            RNNState(
-                hidden=torch.zeros(
-                    batch_size, self.num_heads, self.hidden_dim // self.num_heads, device=device
+        return RNNStateList.from_list(
+            [
+                RNNState(
+                    hidden=torch.zeros(
+                        batch_size, self.num_heads, self.hidden_dim // self.num_heads, device=device
+                    )
                 )
-            )
-            for _ in range(self.num_rnn_layers)
-        ]
+                for _ in range(self.num_rnn_layers)
+            ]
+        )

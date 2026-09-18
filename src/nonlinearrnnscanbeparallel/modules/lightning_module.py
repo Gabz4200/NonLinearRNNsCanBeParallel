@@ -13,22 +13,17 @@ import lightning
 import torch
 from torch import nn
 
-from ..models.base import RNNState, RNNStateList
+from ..models.base import RNNModule, RNNState, RNNStateList
 from ..models.registry import get_model
 
 
 class RNNTask(lightning.LightningModule):
-    """Lightning task for MLP-RNN / rKAN-RNN / M²RNN training with BPTT.
-
-    Backbone returns latents; this module computes the classification loss
-    and metrics. The backbone is constructed once from `model_spec` and is
-    fully owned by this task (no model-specific kwarg filtering here).
-    """
+    """Lightning task for any model implementing RNNModule protocol."""
 
     def __init__(
         self,
         model_spec: dict[str, Any] | None = None,
-        backbone: nn.Module | None = None,
+        backbone: RNNModule | None = None,
     ) -> None:
         super().__init__()
         self.save_hyperparameters()
@@ -40,7 +35,7 @@ class RNNTask(lightning.LightningModule):
         max_seq_len = model_spec.get("max_seq_len", 66)
 
         if backbone is not None:
-            self.backbone = backbone
+            self.backbone: nn.Module = backbone  # type: ignore[assignment]
         else:
             model_kwargs = {
                 k: v
@@ -58,7 +53,7 @@ class RNNTask(lightning.LightningModule):
     def _forward_chunked(
         self, input_ids: torch.Tensor, state: RNNStateList | None = None
     ) -> tuple[torch.Tensor, RNNStateList | None]:
-        b, t = input_ids.shape
+        _, t = input_ids.shape
         chunk = self.bptt_max_seq_len
         if chunk <= 0 or t <= chunk:
             return self.forward(input_ids, state)
@@ -69,7 +64,11 @@ class RNNTask(lightning.LightningModule):
             logits_chunk, state = self.forward(chunk_ids, state)
             outputs.append(logits_chunk)
             if state is not None and end < t:
-                state = [RNNState(hidden=s.hidden.detach(), extra=s.extra) for s in state]
+                # Detach hidden states but preserve extra (conv_cache, etc.)
+                detached_states = [
+                    RNNState(hidden=s.hidden.detach(), extra=s.extra) for s in state.states
+                ]
+                state = RNNStateList.from_list(detached_states)
         return torch.cat(outputs, dim=1), state
 
     def forward(
@@ -112,7 +111,6 @@ class RNNTask(lightning.LightningModule):
         self.validation_step(batch, batch_idx)
 
     def configure_optimizers(self) -> Any:
-        # Weight decay applies to 2D matrices only; embeddings and 1D params are excluded.
         decay = []
         no_decay = []
 
@@ -121,7 +119,7 @@ class RNNTask(lightning.LightningModule):
                 continue
             if name == "input_embed.weight":
                 no_decay.append(param)
-            elif len(param.shape) >= 2 and param.dim() == 2:
+            elif param.dim() == 2:
                 decay.append(param)
             else:
                 no_decay.append(param)

@@ -19,7 +19,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 import lightning  # noqa: E402
 
-import nonlinearrnnscanbeparallel.models  # noqa: F401, E402 - populates registry
+import nonlinearrnnscanbeparallel.models  # noqa: F401, E402 - populates registry (side effect)
 from nonlinearrnnscanbeparallel.data.datamodule import GraphConnectivityDataModule  # noqa: E402
 from nonlinearrnnscanbeparallel.models.registry import list_models  # noqa: E402
 from nonlinearrnnscanbeparallel.modules.lightning_module import RNNTask  # noqa: E402

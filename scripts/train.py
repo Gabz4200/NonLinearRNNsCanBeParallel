@@ -29,7 +29,11 @@ def _container(node: Any) -> dict[str, Any]:
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from nonlinearrnnscanbeparallel.data.datamodule import GraphConnectivityDataModule  # noqa: E402
-from nonlinearrnnscanbeparallel.models import M2RNN, MLPRNN, RKANRNN  # noqa: F401, E402
+from nonlinearrnnscanbeparallel.models import (  # noqa: F401, E402 - registers models (side effect)
+    M2RNN,
+    MLPRNN,
+    RKANRNN,
+)
 from nonlinearrnnscanbeparallel.modules.lightning_module import RNNTask  # noqa: E402
 
 

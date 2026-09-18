@@ -28,7 +28,7 @@ import torch
 import torch.nn as nn
 from torch.nn import functional
 
-from .base import BaseRNNModel, RMSNorm, RNNState, SiLU
+from .base import BaseRNNModel, RMSNorm, RNNState, RNNStateList, SiLU
 from .registry import register_model
 
 # Default per-head dimensions following the paper's multi-value formulation
@@ -54,6 +54,8 @@ class DepthwiseConv1d(nn.Module):
 
     Used for q, k, v projections per Section 3.1.2.  Operates on
     [B, T, D] tensors, internally transposing to [B, D, T] for Conv1d.
+
+    Supports conv cache for BPTT chunking / autoregressive step().
     """
 
     def __init__(self, channels: int, kernel_size: int = 4) -> None:
@@ -69,12 +71,35 @@ class DepthwiseConv1d(nn.Module):
         )
         nn.init.normal_(self.conv.weight, mean=0.0, std=0.02)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # Transpose to Conv1d layout with causal left padding.
+    def forward(
+        self, x: torch.Tensor, conv_cache: torch.Tensor | None = None
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        Args:
+            x: [B, T, D]
+            conv_cache: [B, D, kernel_size-1] or None
+
+        Returns:
+            out: [B, T, D]
+            new_cache: [B, D, kernel_size-1]
+        """
+        # Transpose to Conv1d layout: [B, D, T]
         x_t = x.transpose(1, 2)
-        x_t = functional.pad(x_t, (self.kernel_size - 1, 0))  # left pad only
+
+        # Prepend cache if available, else left-pad with zeros
+        if conv_cache is not None:
+            x_t = torch.cat([conv_cache, x_t], dim=-1)
+        else:
+            x_t = functional.pad(x_t, (self.kernel_size - 1, 0))
+
+        # New cache = last (kernel_size-1) tokens of the *padded input*
+        # (needed for next chunk's causal conv)
+        new_cache = x_t[..., -(self.kernel_size - 1) :].detach()
+
+        # Convolution
         x_t = self.conv(x_t)
-        return x_t.transpose(1, 2)
+
+        return x_t.transpose(1, 2), new_cache
 
 
 class M2RNNLayer(nn.Module):
@@ -122,18 +147,33 @@ class M2RNNLayer(nn.Module):
         self.rms_scale = nn.Parameter(torch.ones(num_heads, value_dim))
 
     def _project(
-        self, x: torch.Tensor
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        self,
+        x: torch.Tensor,
+        conv_cache: torch.Tensor | None = None,
+    ) -> tuple[
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+    ]:
         """Parallel pre-recurrence projections for a [B, T, D] input.
 
-        Returns q, k [B, T, N, K], v [B, T, N, V], f [B, T, N], g [B, T, N, V].
+        Args:
+            x: [B, T, D]
+            conv_cache: [B, proj_dim, kernel_size-1] or None
+
+        Returns:
+            q, k [B, T, N, K], v [B, T, N, V], f [B, T, N], g [B, T, N, V], new_conv_cache
         """
         t = x.shape[1]
         num_heads = self.num_heads
         dim_k = self.key_dim
         dim_v = self.value_dim
 
-        qkv = self.qkv_conv(self.qkv_proj(x))
+        qkv_proj = self.qkv_proj(x)
+        qkv, new_conv_cache = self.qkv_conv(qkv_proj, conv_cache)
         qkv = SiLU()(qkv)
 
         q = qkv[:, :, : num_heads * dim_k].reshape(x.shape[0], t, num_heads, dim_k)
@@ -146,7 +186,7 @@ class M2RNNLayer(nn.Module):
 
         g = SiLU()(self.W_g(x))
         g = g.reshape(x.shape[0], t, num_heads, dim_v)
-        return q, k, v, f, g
+        return q, k, v, f, g, new_conv_cache
 
     def _recurrence_update(
         self,
@@ -172,10 +212,10 @@ class M2RNNLayer(nn.Module):
     def step(self, x_t: torch.Tensor, state: RNNState) -> tuple[torch.Tensor, RNNState]:
         """Single-token update: x_t [B, D] with state.hidden [B, N, K, V].
 
-        Exact for the first token of a sequence; later tokens differ from
-        full forward by the missing left conv context (no conv cache kept).
+        Uses conv cache from state.extra for causal convolution continuity.
         """
-        q, k, v, f, g = self._project(x_t.unsqueeze(1))
+        conv_cache = state.extra.get("conv_cache") if state.extra else None
+        q, k, v, f, g, new_conv_cache = self._project(x_t.unsqueeze(1), conv_cache)
 
         h = state.hidden
         if h.dim() == 3:
@@ -185,14 +225,16 @@ class M2RNNLayer(nn.Module):
 
         o = self.dropout(self.W_o(y_gt.reshape(x_t.shape[0], self.num_heads * self.value_dim)))
         # Residual connection around the recurrence (paper §3.1.2 Fig. 2).
-        return o + x_t, RNNState(hidden=h)
+        extra = {"conv_cache": new_conv_cache}
+        return o + x_t, RNNState(hidden=h, extra=extra)
 
     def forward(self, x: torch.Tensor, state: RNNState) -> tuple[torch.Tensor, RNNState]:
         t = x.shape[1]
         num_heads = self.num_heads
         dim_v = self.value_dim
 
-        q, k, v, f, g = self._project(x)
+        conv_cache = state.extra.get("conv_cache") if state.extra else None
+        q, k, v, f, g, new_conv_cache = self._project(x, conv_cache)
 
         h = state.hidden
         if h.dim() == 3:
@@ -211,7 +253,8 @@ class M2RNNLayer(nn.Module):
         o = self.W_o(y_out)
         o = self.dropout(o)
         # Residual connection around the recurrence (paper §3.1.2 Fig. 2).
-        return o + x, RNNState(hidden=h)
+        extra = {"conv_cache": new_conv_cache}
+        return o + x, RNNState(hidden=h, extra=extra)
 
     def _rmsnorm(self, x: torch.Tensor) -> torch.Tensor:
         """RMSNorm over the value dimension V for each head.
@@ -279,52 +322,63 @@ class M2RNN(BaseRNNModel):
         self.classifier = nn.Linear(hidden_dim, num_classes, bias=False)
 
     def forward(
-        self, x: torch.Tensor, state: list[RNNState] | None = None
-    ) -> tuple[torch.Tensor, list[RNNState]]:
+        self, x: torch.Tensor, state: RNNStateList | None = None
+    ) -> tuple[torch.Tensor, RNNStateList]:
         x = self.emb_norm(x)
 
         if state is None:
             state = self.init_state(x.shape[0], x.device)
 
-        new_states: list[RNNState] = []
+        new_states_list: list[RNNState] = []
         for i, layer_pair in enumerate(self.layers):
             rnn_layer, ff_layer = layer_pair
             x, new_state = rnn_layer(x, state[i])
-            new_states.append(new_state)
+            new_states_list.append(new_state)
             x = ff_layer(x)
 
         x = self.final_norm(x)
         logits = self.classifier(x)
-        return logits, new_states
+        return logits, RNNStateList.from_list(new_states_list)
 
     def step(
-        self, x_t: torch.Tensor, state: list[RNNState] | None = None
-    ) -> tuple[torch.Tensor, list[RNNState]]:
+        self, x_t: torch.Tensor, state: RNNStateList | None = None
+    ) -> tuple[torch.Tensor, RNNStateList]:
         """Single-token decoding: x_t [B, D] -> logits [B, C] plus updated states."""
         x_t = self.emb_norm(x_t)
 
         if state is None:
             state = self.init_state(x_t.shape[0], x_t.device)
 
-        new_states: list[RNNState] = []
+        new_states_list: list[RNNState] = []
         for i, layer_pair in enumerate(self.layers):
             rnn_layer, ff_layer = layer_pair
             x_t, new_state = rnn_layer.step(x_t, state[i])
-            new_states.append(new_state)
+            new_states_list.append(new_state)
             x_t = ff_layer(x_t)
 
-        return self.classifier(self.final_norm(x_t)), new_states
+        return self.classifier(self.final_norm(x_t)), RNNStateList.from_list(new_states_list)
 
-    def init_state(self, batch_size: int, device: torch.device) -> list[RNNState]:
-        return [
-            RNNState(
-                hidden=torch.zeros(
-                    batch_size,
-                    self.num_heads,
-                    self.key_dim,
-                    self.value_dim,
-                    device=device,
+    def init_state(self, batch_size: int, device: torch.device) -> RNNStateList:
+        # conv_cache shape: [B, proj_dim, kernel_size-1]
+        # proj_dim = num_heads * (key_dim + key_dim + value_dim)
+        proj_dim = self.num_heads * (self.key_dim + self.key_dim + self.value_dim)
+        kernel_size = 4  # default in M2RNNLayer
+        return RNNStateList.from_list(
+            [
+                RNNState(
+                    hidden=torch.zeros(
+                        batch_size,
+                        self.num_heads,
+                        self.key_dim,
+                        self.value_dim,
+                        device=device,
+                    ),
+                    extra={
+                        "conv_cache": torch.zeros(
+                            batch_size, proj_dim, kernel_size - 1, device=device
+                        )
+                    },
                 )
-            )
-            for _ in range(self.num_rnn_layers)
-        ]
+                for _ in range(self.num_rnn_layers)
+            ]
+        )

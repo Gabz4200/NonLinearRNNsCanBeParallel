@@ -16,6 +16,8 @@ def test_models_registered() -> None:
     assert "mlp_rnn" in names
     assert "rkan_rnn" in names
     assert "m2rnn" in names
+    assert "min_gru" in names
+    assert "min_lstm" in names
 
 
 def test_mlp_rnn_forward_backward() -> None:
@@ -70,6 +72,46 @@ def test_m2rnn_forward_backward() -> None:
     state = model.init_state(2, x.device)
     logits, new_state = model(x, state)
     assert logits.shape == (2, 10, 2)
+    assert len(new_state) == 2
+    loss = logits.sum()
+    loss.backward()
+
+
+def test_min_gru_forward_backward() -> None:
+    model = get_model(
+        "min_gru",
+        input_dim=32,
+        hidden_dim=32,
+        num_layers=2,
+        num_heads=2,
+        dropout=0.0,
+        num_classes=2,
+    )
+    x = torch.randn(2, 8, 32)
+    state = model.init_state(2, x.device)
+    assert all(state_value.hidden.min() > 0 for state_value in state)
+    logits, new_state = model(x, state)
+    assert logits.shape == (2, 8, 2)
+    assert len(new_state) == 2
+    loss = logits.sum()
+    loss.backward()
+
+
+def test_min_lstm_forward_backward() -> None:
+    model = get_model(
+        "min_lstm",
+        input_dim=32,
+        hidden_dim=32,
+        num_layers=2,
+        num_heads=2,
+        dropout=0.0,
+        num_classes=2,
+    )
+    x = torch.randn(2, 8, 32)
+    state = model.init_state(2, x.device)
+    assert all(state_value.hidden.min() > 0 for state_value in state)
+    logits, new_state = model(x, state)
+    assert logits.shape == (2, 8, 2)
     assert len(new_state) == 2
     loss = logits.sum()
     loss.backward()
@@ -209,7 +251,7 @@ def test_rkan_pade_forward_backward() -> None:
     assert layer.theta_d.grad is not None
 
 
-# One task path drives all three registered models.
+# One task path drives all five registered models.
 
 
 def _task_smoke(model_name: str) -> None:
@@ -254,6 +296,14 @@ def test_rnntask_smoke_rkan_rnn() -> None:
 
 def test_rnntask_smoke_m2rnn() -> None:
     _task_smoke("m2rnn")
+
+
+def test_rnntask_smoke_min_gru() -> None:
+    _task_smoke("min_gru")
+
+
+def test_rnntask_smoke_min_lstm() -> None:
+    _task_smoke("min_lstm")
 
 
 # Single-token step() path must match full forward.
@@ -311,6 +361,54 @@ def test_rkan_rnn_step_rollout_matches_forward() -> None:
         input_dim=32,
         hidden_dim=32,
         num_layers=1,
+        num_heads=2,
+        dropout=0.0,
+        num_classes=2,
+    )
+    x = torch.randn(2, 6, 32)
+    state = model.init_state(2, x.device)
+    logits, _ = model(x, state)
+
+    step_logits = []
+    step_state = model.init_state(2, x.device)
+    for t in range(6):
+        out_t, step_state = model.step(x[:, t, :], step_state)
+        step_logits.append(out_t)
+    rollout = torch.stack(step_logits, dim=1)
+    assert torch.allclose(logits, rollout, atol=1e-5)
+
+
+def test_min_gru_step_rollout_matches_forward() -> None:
+    """Autoregressive step() rollout must equal parallel minGRU forward()."""
+    model = get_model(
+        "min_gru",
+        input_dim=32,
+        hidden_dim=32,
+        num_layers=2,
+        num_heads=2,
+        dropout=0.0,
+        num_classes=2,
+    )
+    x = torch.randn(2, 6, 32)
+    state = model.init_state(2, x.device)
+    logits, _ = model(x, state)
+
+    step_logits = []
+    step_state = model.init_state(2, x.device)
+    for t in range(6):
+        out_t, step_state = model.step(x[:, t, :], step_state)
+        step_logits.append(out_t)
+    rollout = torch.stack(step_logits, dim=1)
+    assert torch.allclose(logits, rollout, atol=1e-5)
+
+
+def test_min_lstm_step_rollout_matches_forward() -> None:
+    """Autoregressive step() rollout must equal parallel minLSTM forward()."""
+    model = get_model(
+        "min_lstm",
+        input_dim=32,
+        hidden_dim=32,
+        num_layers=2,
         num_heads=2,
         dropout=0.0,
         num_classes=2,
