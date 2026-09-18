@@ -6,7 +6,7 @@ from pathlib import Path
 import torch
 from safetensors.torch import save_file
 
-import nonlinearrnnscanbeparallel.models  # noqa: F401 - populates MODEL_REGISTRY
+import nonlinearrnnscanbeparallel.models  # noqa: F401 - populates MODEL_REGISTRY (side effect)
 from nonlinearrnnscanbeparallel.integrations.transformers import (
     NonLinearRNNsCanBeParallelConfig,
     NonLinearRNNsCanBeParallelModel,

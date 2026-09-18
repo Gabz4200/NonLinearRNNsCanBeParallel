@@ -18,4 +18,6 @@ project-excludes = [
     ".pytest_cache/**",
     "outputs/**",
     "notebooks/**",
+    "src/nonlinearrnnscanbeparallel/integrations/**",
+    "src/nonlinearrnnscanbeparallel/kernels/**",
 ]
