@@ -15,6 +15,7 @@ from .long_sequence import (
     LongSequenceLMDataModule,
     LongSequenceSample,
 )
+from .openthoughts_lm import OpenThoughtsLMConfig, OpenThoughtsLMDataModule, OpenThoughtsLMDataset
 
 __all__ = [
     "GraphConnectivityDataModule",
@@ -26,4 +27,7 @@ __all__ = [
     "LongSequenceInductionDataset",
     "LongSequenceLMDataModule",
     "LongSequenceSample",
+    "OpenThoughtsLMConfig",
+    "OpenThoughtsLMDataset",
+    "OpenThoughtsLMDataModule",
 ]

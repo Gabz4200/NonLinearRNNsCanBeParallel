@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+from typing import cast
+
 import torch
 
 from nonlinearrnnscanbeparallel.models.parallel_wrapper import ParallelRNNTrainer
 from nonlinearrnnscanbeparallel.models.registry import get_model
+from nonlinearrnnscanbeparallel.models.scaffold import MinGRUScaffold, ScaffoldStack
+from nonlinearrnnscanbeparallel.models.translator import TranslatorLayer, TranslatorStack
 
 
 def test_parallel_wrapper_forward_shape() -> None:
@@ -62,14 +66,14 @@ def test_parallel_wrapper_scaffold_per_layer() -> None:
     # Check per-layer scaffolds
     assert hasattr(wrapper, "scaffolds")
     assert len(wrapper.scaffolds) == 3
-    # Each scaffold is a separate instance
+    # Each scaffold stack is a separate instance
     for i in range(3):
         for j in range(i + 1, 3):
-            # type: ignore[attr-defined, index]
-            assert (
-                wrapper.scaffolds[i].linear_z[0].weight
-                is not wrapper.scaffolds[j].linear_z[0].weight
-            )
+            left = cast(ScaffoldStack, wrapper.scaffolds[i]).layers[0]
+            right = cast(ScaffoldStack, wrapper.scaffolds[j]).layers[0]
+            assert isinstance(left, MinGRUScaffold)
+            assert isinstance(right, MinGRUScaffold)
+            assert left.linear_z[0].weight is not right.linear_z[0].weight
 
 
 def test_parallel_wrapper_translator_per_layer() -> None:
@@ -87,11 +91,16 @@ def test_parallel_wrapper_translator_per_layer() -> None:
     wrapper = ParallelRNNTrainer(target, chunk_size=8, scaffold_dim=16)
 
     assert len(wrapper.translators) == 3
-    # Each translator is a separate instance
+    # Each translator stack is a separate instance
     for i in range(3):
         for j in range(i + 1, 3):
-            # type: ignore[attr-defined]
-            assert wrapper.translators[i].net[0].weight is not wrapper.translators[j].net[0].weight
+            left = cast(TranslatorStack, wrapper.translators[i]).layers[0]
+            right = cast(TranslatorStack, wrapper.translators[j]).layers[0]
+            assert isinstance(left, TranslatorLayer)
+            assert isinstance(right, TranslatorLayer)
+            left_net = cast(torch.nn.Sequential, left.net)
+            right_net = cast(torch.nn.Sequential, right.net)
+            assert left_net[0].weight is not right_net[0].weight
 
 
 def test_parallel_wrapper_gradient_isolation() -> None:

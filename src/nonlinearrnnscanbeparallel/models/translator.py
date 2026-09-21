@@ -74,22 +74,21 @@ class _RKANTranslator(nn.Module):
         return x
 
 
-class Translator(nn.Module):
-    """Maps scaffold summary states to target RNN boundary states.
+class TranslatorLayer(nn.Module):
+    """Single translator layer: scaffold summary -> boundary state.
 
-    Per layer: each target layer has its own translator.
-    Architecture matches target's function class:
-    - MLP-RNN -> 2-layer MLP translator
-    - rKAN-RNN -> 2-layer rKAN translator
-    - minGRU/minLSTM -> 2-layer MLP translator
-    - M2RNN -> 2-layer MLP outputting matrix state [N, K, V]
+    ``translator_type`` (mlp | rkan) is a pure hyperparameter, decoupled
+    from the target model being trained. ``output_shape`` selects the
+    output geometry: "vector" [B, M, D] or "matrix" [B, M, N, K, V]
+    (M2RNN targets only).
     """
 
     def __init__(
         self,
         input_dim: int,
         hidden_dim: int,
-        target_type: str = "mlp",
+        translator_type: str = "mlp",
+        output_shape: str = "vector",
         dropout: float = 0.1,
         rkan_degree: int = 3,
         rkan_alpha: float = 1.0,
@@ -104,12 +103,15 @@ class Translator(nn.Module):
         value_dim: int = 16,
     ) -> None:
         super().__init__()
-        if target_type not in ("mlp", "rkan", "min_gru", "min_lstm", "m2rnn"):
-            raise ValueError(f"Unknown target_type: {target_type}")
+        if translator_type not in ("mlp", "rkan"):
+            raise ValueError(f"Unknown translator_type: {translator_type}")
+        if output_shape not in ("vector", "matrix"):
+            raise ValueError(f"Unknown output_shape: {output_shape}")
 
         self.input_dim = input_dim
         self.hidden_dim = hidden_dim
-        self.target_type = target_type
+        self.translator_type = translator_type
+        self.output_shape = output_shape
         self.use_gdn2_init = use_gdn2_init
         self.num_heads = num_heads
         self.key_dim = key_dim
@@ -119,21 +121,23 @@ class Translator(nn.Module):
         # Input normalization (on scaffold output)
         self.input_norm = RMSNorm(input_dim)
 
-        if target_type in ("mlp", "min_gru", "min_lstm"):
+        if translator_type == "mlp":
+            out_dim = matrix_state_dim if output_shape == "matrix" else hidden_dim
             # 2-layer MLP with SiLU (matching MLP-RNN, minGRU, minLSTM)
             self.net = nn.Sequential(
-                nn.Linear(input_dim, hidden_dim * 4, bias=False),
+                nn.Linear(input_dim, out_dim * 4, bias=False),
                 nn.SiLU(),
                 nn.Dropout(dropout),
-                nn.Linear(hidden_dim * 4, hidden_dim, bias=False),
+                nn.Linear(out_dim * 4, out_dim, bias=False),
             )
             if use_gdn2_init:
                 self._apply_gdn2_init()
-        elif target_type == "rkan":
+        else:
             # 2-layer rKAN (matching rKAN-RNN)
+            out_dim = matrix_state_dim if output_shape == "matrix" else hidden_dim
             self.net = _RKANTranslator(
                 input_dim,
-                hidden_dim,
+                out_dim,
                 rkan_degree=rkan_degree,
                 rkan_alpha=rkan_alpha,
                 rkan_beta=rkan_beta,
@@ -143,19 +147,8 @@ class Translator(nn.Module):
                 rkan_num_basis=rkan_num_basis,
                 dropout=dropout,
             )
-        else:
-            # M2RNN: output matrix state [N, K, V] = num_heads * key_dim * value_dim
-            self.net = nn.Sequential(
-                nn.Linear(input_dim, matrix_state_dim * 4, bias=False),
-                nn.SiLU(),
-                nn.Dropout(dropout),
-                nn.Linear(matrix_state_dim * 4, matrix_state_dim, bias=False),
-            )
-            if use_gdn2_init:
-                self._apply_gdn2_init()
-
         # Output normalization (on boundary state before feeding to chunk RNN)
-        if target_type == "m2rnn":
+        if output_shape == "matrix":
             self.output_norm = RMSNorm(matrix_state_dim)
         else:
             self.output_norm = RMSNorm(hidden_dim)
@@ -174,14 +167,143 @@ class Translator(nn.Module):
 
         Returns:
             Boundary hidden states:
-            - For mlp/rkan/min_gru/min_lstm: [B, M, D_target]
-            - For m2rnn: [B, M, N, K, V] (matrix state)
+            - vector output_shape: [B, M, D_target]
+            - matrix output_shape: [B, M, N, K, V] (matrix state)
         """
         x = self.input_norm(x)
         x = self.net(x)
         x = self.output_norm(x)
-        if self.target_type == "m2rnn":
+        if self.output_shape == "matrix":
             # Reshape to matrix state [B, M, N, K, V]
-            B, M, _ = x.shape
-            x = x.view(B, M, self.num_heads, self.key_dim, self.value_dim)
+            batch, num_boundaries, _ = x.shape
+            x = x.view(batch, num_boundaries, self.num_heads, self.key_dim, self.value_dim)
+        return x
+
+
+_LEGACY_TARGET_TO_TRANSLATOR = {
+    "mlp": "mlp",
+    "min_gru": "mlp",
+    "min_lstm": "mlp",
+    "m2rnn": "mlp",
+    "rkan": "rkan",
+}
+
+
+class Translator(TranslatorLayer):
+    """Backward-compatible translator bound to a target model type.
+
+    ``target_type`` (mlp | rkan | min_gru | min_lstm | m2rnn) selects the
+    legacy architecture: rkan target -> rkan translator, m2rnn target ->
+    matrix output shape, everything else -> mlp translator. Prefer
+    :class:`TranslatorLayer` with explicit ``translator_type`` /
+    ``output_shape`` for new code.
+    """
+
+    def __init__(
+        self,
+        input_dim: int,
+        hidden_dim: int,
+        target_type: str = "mlp",
+        translator_type: str | None = None,
+        output_shape: str | None = None,
+        dropout: float = 0.1,
+        rkan_degree: int = 3,
+        rkan_alpha: float = 1.0,
+        rkan_beta: float = 1.0,
+        rkan_iota: float = 1.0,
+        rkan_mapping: str = "algebraic_infinite",
+        rkan_type: str = "jacobi",
+        rkan_num_basis: int = 4,
+        use_gdn2_init: bool = True,
+        num_heads: int = 4,
+        key_dim: int = 16,
+        value_dim: int = 16,
+    ) -> None:
+        if target_type not in ("mlp", "rkan", "min_gru", "min_lstm", "m2rnn"):
+            raise ValueError(f"Unknown target_type: {target_type}")
+        resolved_translator = translator_type or _LEGACY_TARGET_TO_TRANSLATOR[target_type]
+        resolved_shape = output_shape or ("matrix" if target_type == "m2rnn" else "vector")
+        super().__init__(
+            input_dim,
+            hidden_dim,
+            translator_type=resolved_translator,
+            output_shape=resolved_shape,
+            dropout=dropout,
+            rkan_degree=rkan_degree,
+            rkan_alpha=rkan_alpha,
+            rkan_beta=rkan_beta,
+            rkan_iota=rkan_iota,
+            rkan_mapping=rkan_mapping,
+            rkan_type=rkan_type,
+            rkan_num_basis=rkan_num_basis,
+            use_gdn2_init=use_gdn2_init,
+            num_heads=num_heads,
+            key_dim=key_dim,
+            value_dim=value_dim,
+        )
+        self.target_type = target_type
+
+
+class TranslatorStack(nn.Module):
+    """Stack of 1..N translator layers applied per outer RNN layer.
+
+    Intermediate layers use vector output; only the final layer applies
+    ``output_shape`` (matrix reshape for M2RNN targets). ``num_layers=1``
+    reproduces the legacy single-translator behavior exactly.
+    """
+
+    def __init__(
+        self,
+        input_dim: int,
+        hidden_dim: int,
+        translator_type: str = "mlp",
+        num_layers: int = 1,
+        output_shape: str = "vector",
+        dropout: float = 0.1,
+        rkan_degree: int = 3,
+        rkan_alpha: float = 1.0,
+        rkan_beta: float = 1.0,
+        rkan_iota: float = 1.0,
+        rkan_mapping: str = "algebraic_infinite",
+        rkan_type: str = "jacobi",
+        rkan_num_basis: int = 4,
+        use_gdn2_init: bool = True,
+        num_heads: int = 4,
+        key_dim: int = 16,
+        value_dim: int = 16,
+    ) -> None:
+        super().__init__()
+        if num_layers < 1:
+            raise ValueError("translator num_layers must be >= 1")
+        self.num_translator_layers = num_layers
+        layers: list[nn.Module] = []
+        in_dim = input_dim
+        for i in range(num_layers):
+            last = i == num_layers - 1
+            layers.append(
+                TranslatorLayer(
+                    in_dim,
+                    hidden_dim,
+                    translator_type=translator_type,
+                    output_shape=output_shape if last else "vector",
+                    dropout=dropout,
+                    rkan_degree=rkan_degree,
+                    rkan_alpha=rkan_alpha,
+                    rkan_beta=rkan_beta,
+                    rkan_iota=rkan_iota,
+                    rkan_mapping=rkan_mapping,
+                    rkan_type=rkan_type,
+                    rkan_num_basis=rkan_num_basis,
+                    use_gdn2_init=use_gdn2_init,
+                    num_heads=num_heads,
+                    key_dim=key_dim,
+                    value_dim=value_dim,
+                )
+            )
+            in_dim = hidden_dim
+        self.layers = nn.ModuleList(layers)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        for layer in self.layers:
+            x = layer(x)
         return x

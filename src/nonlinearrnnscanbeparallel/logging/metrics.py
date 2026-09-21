@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+
 import torch
 
 
@@ -28,3 +30,13 @@ def sequence_accuracy(
     last_logits = logits[batch_indices, last_valid]
     last_targets = targets[batch_indices, last_valid]
     return (last_logits.argmax(dim=-1) == last_targets).float().mean().item()
+
+
+def perplexity(loss: float) -> float:
+    """Perplexity from a cross-entropy loss, clamped for numerical safety."""
+    return math.exp(min(loss, 20.0))
+
+
+def token_accuracy(logits: torch.Tensor, targets: torch.Tensor, ignore_index: int = -100) -> float:
+    """Mean next-token accuracy ignoring masked positions."""
+    return accuracy(logits, targets, ignore_index)

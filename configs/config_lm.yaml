@@ -1,0 +1,30 @@
+defaults:
+  - model: nano_min_gru_tiny
+  - data_openthoughts
+  - trainer_lm
+  - runtime
+  - parallel
+  - _self_
+
+# Task: causal language modeling on an OpenThoughts-114k subset.
+task: openthoughts_lm
+
+# Models in the run: nano_rnn (mixer selected via model.mixer_type).
+models:
+  - nano_rnn
+
+# Training modes to run: parallel | bptt (one or both).
+modes:
+  - parallel
+  - bptt
+
+# Optional: override specific keys here
+fast_dev_run: false
+
+# Scaffold hidden dim must be divisible by model.num_heads (12 for Tiny).
+parallel:
+  scaffold_dim: 384
+
+callbacks:
+  model_checkpoint: true
+  early_stopping: true
