@@ -26,9 +26,10 @@ from __future__ import annotations
 
 import torch
 import torch.nn as nn
-from torch.nn import functional
+import torch.nn.functional as F
 
-from .base import BaseRNNModel, RMSNorm, RNNState, RNNStateList, SiLU
+from .base import BaseRNNModel, RMSNorm, RNNState, RNNStateList
+from .mlp_rnn import FeedForwardSublayer
 from .registry import register_model
 
 # Default per-head dimensions following the paper's multi-value formulation
@@ -90,7 +91,7 @@ class DepthwiseConv1d(nn.Module):
         if conv_cache is not None:
             x_t = torch.cat([conv_cache, x_t], dim=-1)
         else:
-            x_t = functional.pad(x_t, (self.kernel_size - 1, 0))
+            x_t = F.pad(x_t, (self.kernel_size - 1, 0))
 
         # New cache = last (kernel_size-1) tokens of the *padded input*
         # (needed for next chunk's causal conv)
@@ -174,7 +175,7 @@ class M2RNNLayer(nn.Module):
 
         qkv_proj = self.qkv_proj(x)
         qkv, new_conv_cache = self.qkv_conv(qkv_proj, conv_cache)
-        qkv = SiLU()(qkv)
+        qkv = nn.SiLU()(qkv)
 
         q = qkv[:, :, : num_heads * dim_k].reshape(x.shape[0], t, num_heads, dim_k)
         k = qkv[:, :, num_heads * dim_k : 2 * num_heads * dim_k].reshape(
@@ -184,7 +185,7 @@ class M2RNNLayer(nn.Module):
 
         f = psi(self.W_f(x), self.alpha_raw, self.beta_raw)
 
-        g = SiLU()(self.W_g(x))
+        g = nn.SiLU()(self.W_g(x))
         g = g.reshape(x.shape[0], t, num_heads, dim_v)
         return q, k, v, f, g, new_conv_cache
 
@@ -293,8 +294,6 @@ class M2RNN(BaseRNNModel):
     ) -> None:
         super().__init__(input_dim, hidden_dim, num_layers, num_heads, dropout)
 
-        from .mlp_rnn import FeedForwardSublayer
-
         self.key_dim = key_dim
         self.value_dim = value_dim
 
@@ -338,7 +337,7 @@ class M2RNN(BaseRNNModel):
 
         x = self.final_norm(x)
         logits = self.classifier(x)
-        return logits, RNNStateList.from_list(new_states_list)
+        return logits, RNNStateList(new_states_list)
 
     def step(
         self, x_t: torch.Tensor, state: RNNStateList | None = None
@@ -356,14 +355,14 @@ class M2RNN(BaseRNNModel):
             new_states_list.append(new_state)
             x_t = ff_layer(x_t)
 
-        return self.classifier(self.final_norm(x_t)), RNNStateList.from_list(new_states_list)
+        return self.classifier(self.final_norm(x_t)), RNNStateList(new_states_list)
 
     def init_state(self, batch_size: int, device: torch.device) -> RNNStateList:
         # conv_cache shape: [B, proj_dim, kernel_size-1]
         # proj_dim = num_heads * (key_dim + key_dim + value_dim)
         proj_dim = self.num_heads * (self.key_dim + self.key_dim + self.value_dim)
         kernel_size = 4  # default in M2RNNLayer
-        return RNNStateList.from_list(
+        return RNNStateList(
             [
                 RNNState(
                     hidden=torch.zeros(

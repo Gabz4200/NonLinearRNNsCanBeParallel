@@ -68,7 +68,7 @@ class RNNTask(lightning.LightningModule):
                 detached_states = [
                     RNNState(hidden=s.hidden.detach(), extra=s.extra) for s in state.states
                 ]
-                state = RNNStateList.from_list(detached_states)
+                state = RNNStateList(detached_states)
         return torch.cat(outputs, dim=1), state
 
     def forward(

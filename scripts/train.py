@@ -28,12 +28,19 @@ Usage:
 
 from __future__ import annotations
 
+import json
 import math
 import sys
 import time
+import traceback
 from datetime import datetime
 from pathlib import Path
 from typing import Any, cast
+
+import matplotlib
+
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -141,25 +148,34 @@ def _build_task(
     target_type = TARGET_TYPE.get(model_name, model_name)
     spec = {**model_cfg, "name": model_name, "total_steps": total_steps}
 
-    if task == "ustcon":
-        if mode == "parallel":
-            backbone = ParallelRNNTrainer(
-                target_rnn=target,
-                chunk_size=int(parallel_cfg.get("chunk_size", 64)),
-                scaffold_dim=int(parallel_cfg.get("scaffold_dim", 128)),
-                target_type=target_type,
-                detach_boundary=bool(parallel_cfg.get("detach_boundary", False)),
-                use_gdn2_init=bool(parallel_cfg.get("use_gdn2_init", True)),
-            )
-            clip_fn = configure_gradient_clipping(
+    def _parallel_backbone(default_chunk: int, default_scaffold: int) -> ParallelRNNTrainer:
+        return ParallelRNNTrainer(
+            target_rnn=target,
+            chunk_size=int(parallel_cfg.get("chunk_size", default_chunk)),
+            scaffold_dim=int(parallel_cfg.get("scaffold_dim", default_scaffold)),
+            target_type=target_type,
+            detach_boundary=bool(parallel_cfg.get("detach_boundary", False)),
+            use_gdn2_init=bool(parallel_cfg.get("use_gdn2_init", True)),
+        )
+
+    def _clip_callback(
+        backbone: ParallelRNNTrainer,
+    ) -> GradientClippingCallback:
+        return GradientClippingCallback(
+            configure_gradient_clipping(
                 backbone,
                 target_grad_clip=float(model_cfg.get("target_grad_clip", 1.0)),
                 scaffold_grad_clip=float(model_cfg.get("scaffold_grad_clip", 0.5)),
                 translator_grad_clip=float(model_cfg.get("translator_grad_clip", 0.5)),
             )
+        )
+
+    if task == "ustcon":
+        if mode == "parallel":
+            backbone = _parallel_backbone(64, 128)
             return (
                 ParallelGraphReachabilityTask(spec, backbone),
-                GradientClippingCallback(clip_fn),
+                _clip_callback(backbone),
                 0.0,
             )
         return (
@@ -172,22 +188,8 @@ def _build_task(
     clip_cb: Callback | None = None
     clip_val = float(model_cfg.get("target_grad_clip", 1.0))
     if mode == "parallel":
-        backbone = ParallelRNNTrainer(
-            target_rnn=target,
-            chunk_size=int(parallel_cfg.get("chunk_size", 128)),
-            scaffold_dim=int(parallel_cfg.get("scaffold_dim", 256)),
-            target_type=target_type,
-            detach_boundary=bool(parallel_cfg.get("detach_boundary", False)),
-            use_gdn2_init=bool(parallel_cfg.get("use_gdn2_init", True)),
-        )
-        clip_cb = GradientClippingCallback(
-            configure_gradient_clipping(
-                backbone,
-                target_grad_clip=float(model_cfg.get("target_grad_clip", 1.0)),
-                scaffold_grad_clip=float(model_cfg.get("scaffold_grad_clip", 0.5)),
-                translator_grad_clip=float(model_cfg.get("translator_grad_clip", 0.5)),
-            )
-        )
+        backbone = _parallel_backbone(128, 256)
+        clip_cb = _clip_callback(backbone)
         clip_val = 0.0
     rnn_task = RNNTask(
         model_spec={
@@ -271,13 +273,17 @@ def _run_one(
     return result, curves
 
 
+def _style_log_axes(ax, xlabel: str, ylabel: str, title: str) -> None:
+    ax.set_yscale("log")
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel(ylabel)
+    ax.set_title(title)
+    ax.legend()
+    ax.grid(True, which="both", alpha=0.3)
+
+
 def _plot_results(runs: list[dict[str, Any]], results_dir: Path) -> None:
     """Save per-run loss curves and a validation-loss comparison into results_dir."""
-    import matplotlib
-
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-
     labeled = [(f"{r['model']} [{r['mode']}]", r["train_losses"], r["val_losses"]) for r in runs]
     if not labeled:
         return
@@ -290,12 +296,7 @@ def _plot_results(runs: list[dict[str, Any]], results_dir: Path) -> None:
             ax.plot(range(len(train)), train, label="train", marker="o")
         if val:
             ax.plot(range(len(val)), val, label="val", marker="s")
-        ax.set_yscale("log")
-        ax.set_xlabel("epoch")
-        ax.set_ylabel("loss")
-        ax.set_title(label)
-        ax.legend()
-        ax.grid(True, which="both", alpha=0.3)
+        _style_log_axes(ax, "epoch", "loss", label)
     fig.tight_layout()
     fig.savefig(results_dir / "loss_curves.png")
     plt.close(fig)
@@ -306,12 +307,7 @@ def _plot_results(runs: list[dict[str, Any]], results_dir: Path) -> None:
             ax.plot(range(len(val)), val, label=label, marker="s")
         elif train:
             ax.plot(range(len(train)), train, label=f"{label} (train)", marker="o")
-    ax.set_yscale("log")
-    ax.set_xlabel("epoch")
-    ax.set_ylabel("validation loss")
-    ax.set_title("Validation loss comparison")
-    ax.legend()
-    ax.grid(True, which="both", alpha=0.3)
+    _style_log_axes(ax, "epoch", "validation loss", "Validation loss comparison")
     fig.tight_layout()
     fig.savefig(results_dir / "val_loss_comparison.png")
     plt.close(fig)
@@ -341,8 +337,6 @@ def main(cfg: DictConfig) -> None:
                 all_results.append(result)
                 curves_by_run.append({"model": model_name, "mode": mode, **curves})
             except Exception as error:  # noqa: BLE001
-                import traceback
-
                 print(f"ERROR training {model_name} [{mode}]: {error}")
                 traceback.print_exc()
                 all_results.append({"model": model_name, "mode": mode, "error": str(error)})
@@ -356,8 +350,6 @@ def main(cfg: DictConfig) -> None:
         "results": all_results,
     }
     with (results_dir / "summary.json").open("w") as file:
-        import json
-
         json.dump(summary, file, indent=2)
 
     print(f"\n{'=' * 60}\nSUMMARY\n{'=' * 60}")

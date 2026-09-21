@@ -2,41 +2,35 @@
 
 from __future__ import annotations
 
-from typing import Any
+from collections.abc import Callable
 
 import torch
 from torch import nn
 
-from .rnn_step import RNNStepReference
+from .rnn_step import rnn_step_reference
 
 
-class ReferenceOp:
-    """Reference implementation (always works)."""
-
-    def __call__(
-        self, x: torch.Tensor, h_prev: torch.Tensor, rnn_layer: nn.Module, *args, **kwargs
-    ) -> torch.Tensor:
-        return RNNStepReference()(x, h_prev, rnn_layer)
+def _reference_op(
+    x: torch.Tensor, h_prev: torch.Tensor, rnn_layer: nn.Module, *args, **kwargs
+) -> torch.Tensor:
+    return rnn_step_reference(x, h_prev, rnn_layer)
 
 
-class BackendOp:
-    """Backend implementation (Taichi) - raises until kernel is provided."""
+def _backend_op(
+    x: torch.Tensor, h_prev: torch.Tensor, rnn_layer: nn.Module, *args, **kwargs
+) -> torch.Tensor:
+    from nonlinearrnnscanbeparallel.kernels.taichi.rnn_step import rnn_step
 
-    def __init__(self) -> None:
+    return rnn_step(x, h_prev, rnn_layer)
+
+
+def build_op(
+    backend: str,
+) -> Callable[..., torch.Tensor]:
+    """Build op implementation for given backend."""
+    if backend == "taichi":
         from nonlinearrnnscanbeparallel.kernels.taichi.runtime import ensure_initialized
 
         ensure_initialized()
-
-    def __call__(
-        self, x: torch.Tensor, h_prev: torch.Tensor, rnn_layer: nn.Module, *args, **kwargs
-    ) -> torch.Tensor:
-        from nonlinearrnnscanbeparallel.kernels.taichi.rnn_step import rnn_step
-
-        return rnn_step(x, h_prev, rnn_layer)
-
-
-def build_op(backend: str) -> Any:
-    """Build op implementation for given backend."""
-    if backend == "taichi":
-        return BackendOp()
-    return ReferenceOp()
+        return _backend_op
+    return _reference_op

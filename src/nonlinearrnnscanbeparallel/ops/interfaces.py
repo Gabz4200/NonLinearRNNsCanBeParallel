@@ -8,18 +8,6 @@ import torch
 
 
 class ForwardOp(Protocol):
-    """Protocol for forward-only operations."""
+    """Protocol for forward operations (autograd compatible)."""
 
     def __call__(self, inputs: torch.Tensor, *args, **kwargs) -> torch.Tensor: ...
-
-
-class DifferentiableOp(ForwardOp, Protocol):
-    """Protocol for differentiable operations (autograd compatible)."""
-
-    ...
-
-
-class ProfilerOp(DifferentiableOp, Protocol):
-    """Protocol for operations with profiling support."""
-
-    def profile(self, inputs: torch.Tensor) -> dict[str, float]: ...

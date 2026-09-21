@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import functools
+
 import torch
 from torch import nn
 
 from .base import BaseRNNModel, RMSNorm, RNNState, RNNStateList
+from .mlp_rnn import MultiHeadRNNLayer
 from .registry import register_model
 from .rkan import RationalFeedForward, RKANHead
 
@@ -51,8 +54,6 @@ class RKANRNN(BaseRNNModel):
         # No internal embedding; the task embeds token IDs first.
         self.emb_norm = RMSNorm(hidden_dim)
 
-        from .mlp_rnn import MultiHeadRNNLayer
-
         self.layers = nn.ModuleList()
         self.num_rnn_layers = num_layers
         for _ in range(num_layers):
@@ -62,8 +63,8 @@ class RKANRNN(BaseRNNModel):
                         MultiHeadRNNLayer(
                             hidden_dim,
                             num_heads,
-                            head_factory=lambda h_dim: RKANHead(
-                                h_dim,
+                            head_factory=functools.partial(
+                                RKANHead,
                                 rkan_degree=rkan_degree,
                                 rkan_alpha=rkan_alpha,
                                 rkan_beta=rkan_beta,
@@ -110,7 +111,7 @@ class RKANRNN(BaseRNNModel):
 
         x = self.final_norm(x)
         logits = self.classifier(x)
-        return logits, RNNStateList.from_list(new_states_list)
+        return logits, RNNStateList(new_states_list)
 
     def step(
         self, x_t: torch.Tensor, state: RNNStateList | None = None
@@ -128,10 +129,10 @@ class RKANRNN(BaseRNNModel):
             new_states_list.append(new_state)
             x_t = ff_layer(x_t)
 
-        return self.classifier(self.final_norm(x_t)), RNNStateList.from_list(new_states_list)
+        return self.classifier(self.final_norm(x_t)), RNNStateList(new_states_list)
 
     def init_state(self, batch_size: int, device: torch.device) -> RNNStateList:
-        return RNNStateList.from_list(
+        return RNNStateList(
             [
                 RNNState(
                     hidden=torch.zeros(

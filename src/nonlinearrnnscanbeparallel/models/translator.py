@@ -114,6 +114,7 @@ class Translator(nn.Module):
         self.num_heads = num_heads
         self.key_dim = key_dim
         self.value_dim = value_dim
+        matrix_state_dim = num_heads * key_dim * value_dim
 
         # Input normalization (on scaffold output)
         self.input_norm = RMSNorm(input_dim)
@@ -144,7 +145,6 @@ class Translator(nn.Module):
             )
         else:
             # M2RNN: output matrix state [N, K, V] = num_heads * key_dim * value_dim
-            matrix_state_dim = num_heads * key_dim * value_dim
             self.net = nn.Sequential(
                 nn.Linear(input_dim, matrix_state_dim * 4, bias=False),
                 nn.SiLU(),
@@ -156,7 +156,6 @@ class Translator(nn.Module):
 
         # Output normalization (on boundary state before feeding to chunk RNN)
         if target_type == "m2rnn":
-            matrix_state_dim = num_heads * key_dim * value_dim
             self.output_norm = RMSNorm(matrix_state_dim)
         else:
             self.output_norm = RMSNorm(hidden_dim)
