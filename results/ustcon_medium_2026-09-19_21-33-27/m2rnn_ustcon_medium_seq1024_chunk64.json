@@ -1,0 +1,66 @@
+{
+  "model_name": "m2rnn",
+  "config": {
+    "seed": 42,
+    "task_type": "ustcon",
+    "num_samples": 200,
+    "min_nodes": 10,
+    "max_nodes": 20,
+    "edge_prob": 0.3,
+    "vocab_size": 64,
+    "seq_len": 1024,
+    "batch_size": 16,
+    "num_workers": 0,
+    "hidden_dim": 128,
+    "num_layers": 2,
+    "num_heads": 4,
+    "dropout": 0.1,
+    "num_classes": 64,
+    "chunk_size": 64,
+    "scaffold_dim": 64,
+    "max_epochs": 2,
+    "accumulate_grad_batches": 1,
+    "lr": 0.003,
+    "weight_decay": 0.01,
+    "warmup_ratio": 0.1,
+    "min_lr_ratio": 0.01,
+    "target_grad_clip": 1.0,
+    "scaffold_grad_clip": 0.5,
+    "translator_grad_clip": 0.5,
+    "precision": "32-true",
+    "log_every_n_steps": 10,
+    "model_name": "m2rnn",
+    "target_type": "m2rnn"
+  },
+  "trainable_params": 136819600,
+  "total_time_seconds": 4773.642714500427,
+  "epoch_times": [
+    2229.9636418819427,
+    2496.5867891311646
+  ],
+  "train_losses": [
+    1.644981861114502
+  ],
+  "val_losses": [
+    4.131152153015137,
+    1.1122539043426514,
+    0.9991685748100281
+  ],
+  "val_accuracies": [
+    0.0,
+    0.5,
+    0.5
+  ],
+  "val_reachability_accs": [
+    0.0,
+    0.5,
+    0.5
+  ],
+  "final_train_loss": 1.644981861114502,
+  "final_val_loss": 0.9991685748100281,
+  "final_val_accuracy": 0.5,
+  "final_reachability_acc": 0.5,
+  "best_val_loss": 0.9991685748100281,
+  "best_val_accuracy": 0.5,
+  "best_reachability_acc": 0.5
+}

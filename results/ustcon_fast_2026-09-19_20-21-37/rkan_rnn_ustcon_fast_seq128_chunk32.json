@@ -1,0 +1,71 @@
+{
+  "model_name": "rkan_rnn",
+  "config": {
+    "seed": 42,
+    "task_type": "ustcon",
+    "num_samples": 200,
+    "min_nodes": 6,
+    "max_nodes": 10,
+    "edge_prob": 0.3,
+    "vocab_size": 32,
+    "seq_len": 128,
+    "batch_size": 32,
+    "num_workers": 0,
+    "hidden_dim": 64,
+    "num_layers": 1,
+    "num_heads": 2,
+    "dropout": 0.1,
+    "num_classes": 32,
+    "chunk_size": 32,
+    "scaffold_dim": 32,
+    "max_epochs": 3,
+    "accumulate_grad_batches": 1,
+    "lr": 0.005,
+    "weight_decay": 0.01,
+    "warmup_ratio": 0.1,
+    "min_lr_ratio": 0.01,
+    "target_grad_clip": 1.0,
+    "scaffold_grad_clip": 0.5,
+    "translator_grad_clip": 0.5,
+    "precision": "32-true",
+    "log_every_n_steps": 10,
+    "model_name": "rkan_rnn",
+    "target_type": "rkan"
+  },
+  "trainable_params": 17810,
+  "total_time_seconds": 34.664151668548584,
+  "epoch_times": [
+    8.911833047866821,
+    13.67541766166687,
+    10.2453453540802
+  ],
+  "train_losses": [
+    3.511805772781372,
+    2.1687233448028564
+  ],
+  "val_losses": [
+    3.8639960289001465,
+    2.377826452255249,
+    1.4089854955673218,
+    1.2342276573181152
+  ],
+  "val_accuracies": [
+    0.0,
+    0.8999999761581421,
+    0.8999999761581421,
+    0.8999999761581421
+  ],
+  "val_reachability_accs": [
+    0.0,
+    0.8999999761581421,
+    0.8999999761581421,
+    0.8999999761581421
+  ],
+  "final_train_loss": 2.1687233448028564,
+  "final_val_loss": 1.2342276573181152,
+  "final_val_accuracy": 0.8999999761581421,
+  "final_reachability_acc": 0.8999999761581421,
+  "best_val_loss": 1.2342276573181152,
+  "best_val_accuracy": 0.8999999761581421,
+  "best_reachability_acc": 0.8999999761581421
+}
