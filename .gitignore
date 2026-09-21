@@ -55,9 +55,6 @@ cover/
 # pipenv
 Pipfile.lock
 
-# uv
-uv.lock
-
 # mypy
 .mypy_cache/
 .dmypy.json
@@ -114,6 +111,11 @@ venv.bak/
 # Hydra outputs
 outputs/
 multirun/
+
+# Stale run-artifact dumps at repo root (canonical copies live in results/)
+/loss_curves.png
+/val_loss_comparison.png
+/training_results.json
 
 # OS
 .DS_Store
