@@ -138,5 +138,3 @@ def test_when_all_candidates_are_overlong_generation_fails_finite() -> None:
 def test_invalid_dataset_config_fails_fast(updates: dict[str, object], message: str) -> None:
     with pytest.raises(ValueError, match=message):
         GraphReachabilityConfig(**updates)
-
-
