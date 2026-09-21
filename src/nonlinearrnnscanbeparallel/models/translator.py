@@ -81,6 +81,8 @@ class Translator(nn.Module):
     Architecture matches target's function class:
     - MLP-RNN -> 2-layer MLP translator
     - rKAN-RNN -> 2-layer rKAN translator
+    - minGRU/minLSTM -> 2-layer MLP translator
+    - M2RNN -> 2-layer MLP outputting matrix state [N, K, V]
     """
 
     def __init__(
@@ -97,21 +99,27 @@ class Translator(nn.Module):
         rkan_type: str = "jacobi",
         rkan_num_basis: int = 4,
         use_gdn2_init: bool = True,
+        num_heads: int = 4,
+        key_dim: int = 16,
+        value_dim: int = 16,
     ) -> None:
         super().__init__()
-        if target_type not in ("mlp", "rkan"):
+        if target_type not in ("mlp", "rkan", "min_gru", "min_lstm", "m2rnn"):
             raise ValueError(f"Unknown target_type: {target_type}")
 
         self.input_dim = input_dim
         self.hidden_dim = hidden_dim
         self.target_type = target_type
         self.use_gdn2_init = use_gdn2_init
+        self.num_heads = num_heads
+        self.key_dim = key_dim
+        self.value_dim = value_dim
 
         # Input normalization (on scaffold output)
         self.input_norm = RMSNorm(input_dim)
 
-        if target_type == "mlp":
-            # 2-layer MLP with SiLU (matching MLP-RNN)
+        if target_type in ("mlp", "min_gru", "min_lstm"):
+            # 2-layer MLP with SiLU (matching MLP-RNN, minGRU, minLSTM)
             self.net = nn.Sequential(
                 nn.Linear(input_dim, hidden_dim * 4, bias=False),
                 nn.SiLU(),
@@ -120,7 +128,7 @@ class Translator(nn.Module):
             )
             if use_gdn2_init:
                 self._apply_gdn2_init()
-        else:
+        elif target_type == "rkan":
             # 2-layer rKAN (matching rKAN-RNN)
             self.net = _RKANTranslator(
                 input_dim,
@@ -134,9 +142,24 @@ class Translator(nn.Module):
                 rkan_num_basis=rkan_num_basis,
                 dropout=dropout,
             )
+        else:
+            # M2RNN: output matrix state [N, K, V] = num_heads * key_dim * value_dim
+            matrix_state_dim = num_heads * key_dim * value_dim
+            self.net = nn.Sequential(
+                nn.Linear(input_dim, matrix_state_dim * 4, bias=False),
+                nn.SiLU(),
+                nn.Dropout(dropout),
+                nn.Linear(matrix_state_dim * 4, matrix_state_dim, bias=False),
+            )
+            if use_gdn2_init:
+                self._apply_gdn2_init()
 
         # Output normalization (on boundary state before feeding to chunk RNN)
-        self.output_norm = RMSNorm(hidden_dim)
+        if target_type == "m2rnn":
+            matrix_state_dim = num_heads * key_dim * value_dim
+            self.output_norm = RMSNorm(matrix_state_dim)
+        else:
+            self.output_norm = RMSNorm(hidden_dim)
 
     def _apply_gdn2_init(self) -> None:
         """Apply GDN-2 initialization: Xavier uniform with gain 2^-2.5, zero biases."""
@@ -151,9 +174,15 @@ class Translator(nn.Module):
             x: Scaffold states at boundaries [B, M, D_scaffold]
 
         Returns:
-            Boundary hidden states [B, M, D_target]
+            Boundary hidden states:
+            - For mlp/rkan/min_gru/min_lstm: [B, M, D_target]
+            - For m2rnn: [B, M, N, K, V] (matrix state)
         """
         x = self.input_norm(x)
         x = self.net(x)
         x = self.output_norm(x)
+        if self.target_type == "m2rnn":
+            # Reshape to matrix state [B, M, N, K, V]
+            B, M, _ = x.shape
+            x = x.view(B, M, self.num_heads, self.key_dim, self.value_dim)
         return x
