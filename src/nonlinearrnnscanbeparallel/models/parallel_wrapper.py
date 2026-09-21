@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Callable
+from typing import cast
 
 import torch
 import torch.nn.functional as F
@@ -20,8 +21,8 @@ from torch import nn
 from torch.optim.lr_scheduler import LambdaLR
 
 from .base import RNNState, RNNStateList
-from .scaffold import MinGRUScaffold
-from .translator import Translator
+from .scaffold import ScaffoldStack
+from .translator import _LEGACY_TARGET_TO_TRANSLATOR, TranslatorStack
 
 
 def get_cosine_schedule_with_warmup(
@@ -58,8 +59,6 @@ def configure_gradient_clipping(
         translator_grad_clip: Max gradient norm for translator parameters
     """
 
-    # This function returns a callable that can be used with Lightning's
-    # configure_gradient_clipping hook
     def clip_gradients():
         _clip_params(model.target.parameters(), target_grad_clip)
         for scaffold in model.scaffolds:
@@ -104,6 +103,31 @@ def _reshape_from_chunks(x_chunks: torch.Tensor, B: int, T: int, num_chunks: int
     return x.reshape(B, T, x_chunks.shape[2])
 
 
+def _infer_target_type(target_rnn: nn.Module) -> str:
+    """Infer the wrapper target_type (cell kind) from the target model.
+
+    Handles NanoRNN (``mixer_type``) and the legacy layer classes
+    (MinGRULayer / MinLSTMLayer / M2RNNLayer / MultiHeadRNNLayer).
+    """
+    mixer_type = getattr(target_rnn, "mixer_type", None)
+    if mixer_type is not None:
+        return str(mixer_type)
+    layers = getattr(target_rnn, "layers", None)
+    if layers is not None and len(layers) > 0:
+        first = layers[0][0] if hasattr(layers[0], "__getitem__") else layers[0]
+        name = type(first).__name__
+        if "MinGRU" in name:
+            return "min_gru"
+        if "MinLSTM" in name:
+            return "min_lstm"
+        if "M2RNN" in name:
+            return "m2rnn"
+        heads = getattr(first, "heads", None)
+        if heads is not None and len(heads) > 0 and "RKAN" in type(heads[0]).__name__:
+            return "rkan"
+    return "mlp"
+
+
 class ParallelRNNTrainer(nn.Module):
     """Wrapper that enables parallel training of any RNN via chunkwise decomposition.
 
@@ -124,7 +148,7 @@ class ParallelRNNTrainer(nn.Module):
         target_rnn: nn.Module,
         chunk_size: int,
         scaffold_dim: int,
-        target_type: str = "mlp",
+        target_type: str | None = None,
         num_layers: int | None = None,
         hidden_dim: int | None = None,
         num_heads: int = 4,
@@ -132,14 +156,32 @@ class ParallelRNNTrainer(nn.Module):
         detach_boundary: bool = False,
         use_gdn2_init: bool = True,
         output_head: Callable[[torch.Tensor], torch.Tensor] | None = None,
+        scaffold_type: str = "min_gru",
+        scaffold_num_layers: int = 1,
+        translator_type: str | None = None,
+        translator_num_layers: int = 1,
     ) -> None:
+        """Args:
+        target_rnn: target RNN with ``layers`` as [rnn, ff] pairs.
+        target_type: deprecated legacy selector for the m2rnn code path
+            and default translator. Prefer explicit scaffold/translator keys.
+        scaffold_type: min_gru | min_lstm.
+        scaffold_num_layers: stacked scaffold layers per outer layer (1..N).
+        translator_type: mlp | rkan, or None to resolve from target_type.
+        translator_num_layers: stacked translator layers per outer layer (1..N).
+        """
         super().__init__()
+        if target_type is None:
+            target_type = _infer_target_type(target_rnn)
         self.target = target_rnn
         self.chunk_size = chunk_size
         self.scaffold_dim = scaffold_dim
         self.detach_boundary = detach_boundary
         self.use_gdn2_init = use_gdn2_init
         self.target_type = target_type
+        self.scaffold_type = scaffold_type
+        self.scaffold_num_layers = scaffold_num_layers
+        self.translator_num_layers = translator_num_layers
 
         # Optional output head: takes final hidden states [B, T, D] -> logits [B, T, C]
         # If None, use target's final_norm + classifier if available
@@ -162,12 +204,14 @@ class ParallelRNNTrainer(nn.Module):
         self.hidden_dim = hidden_dim
         self.num_heads = num_heads
 
-        # Per-layer scaffolds (each scans its layer's input)
+        # Per-layer scaffold stacks (each scans its layer's input)
         self.scaffolds = nn.ModuleList(
             [
-                MinGRUScaffold(
+                ScaffoldStack(
+                    scaffold_type=scaffold_type,
                     input_dim=hidden_dim,  # Each layer's input is hidden_dim
                     hidden_dim=scaffold_dim,
+                    num_layers=scaffold_num_layers,
                     num_heads=num_heads,
                     dropout=dropout,
                 )
@@ -175,12 +219,20 @@ class ParallelRNNTrainer(nn.Module):
             ]
         )
 
-        # Per-layer translators
+        # Per-layer translator stacks. translator_type is a pure hyperparameter;
+        # output geometry (vector vs matrix) still derives from the target.
+        resolved_translator = translator_type or _LEGACY_TARGET_TO_TRANSLATOR.get(
+            target_type, "mlp"
+        )
+        self.translator_type = resolved_translator
+        output_shape = "matrix" if target_type == "m2rnn" else "vector"
         # For M2RNN, pass additional params (num_heads, key_dim, value_dim)
         translator_kwargs = {
             "input_dim": scaffold_dim,
             "hidden_dim": hidden_dim,
-            "target_type": target_type,
+            "translator_type": resolved_translator,
+            "num_layers": translator_num_layers,
+            "output_shape": output_shape,
             "dropout": dropout,
             "use_gdn2_init": use_gdn2_init,
         }
@@ -193,7 +245,7 @@ class ParallelRNNTrainer(nn.Module):
                 }
             )
         self.translators = nn.ModuleList(
-            [Translator(**translator_kwargs) for _ in range(num_layers)]
+            [TranslatorStack(**translator_kwargs) for _ in range(num_layers)]
         )
 
         # Input projection to hidden_dim (if needed) for first layer
@@ -217,21 +269,30 @@ class ParallelRNNTrainer(nn.Module):
             return_hidden: If True, also return final hidden states [B, T, D]
 
         Returns:
-            If state was explicitly passed (including None): (logits, new_state) - compatible with RNNModule protocol
+            If state was explicitly passed (including None): (logits, new_state) -
+            compatible with RNNModule protocol
             If state not provided and not training and return_hidden=False: logits [B, T, C]
             If state not provided and not training and return_hidden=True: (logits, hidden_states)
             If state not provided but training: (logits, new_state) for RNNModule compatibility
         """
         # Check if state was explicitly passed
         state_provided = state is not _STATE_NOT_PROVIDED
-        if state_provided:
-            state = state  # type: ignore[assignment]
-        else:
-            state = None
+        state_list: RNNStateList | None = (
+            cast(RNNStateList | None, state) if state_provided else None
+        )
+
+        # Accept token IDs from models that own their embedding (e.g. NanoRNN).
+        if x.dim() == 2 and x.dtype == torch.long:
+            embed = getattr(self.target, "_embed", None)
+            if embed is None:
+                raise ValueError(
+                    "ParallelRNNTrainer received integer token IDs but target has no embedding"
+                )
+            x = embed(x)
 
         # In inference mode, run target RNN sequentially (no scaffold/translator)
         if not self.training:
-            out, new_state = self.target(x, state)
+            out, new_state = self.target(x, state_list)
             if return_hidden:
                 return out, out  # For seq models, output often IS the hidden state
             # Always return tuple for RNNModule compatibility when state was provided
@@ -247,16 +308,14 @@ class ParallelRNNTrainer(nn.Module):
 
         # Process layer by layer
         layer_input = x
-        current_state = state
+        current_state = state_list
 
         for layer_idx in range(self.num_layers):
             # Get the RNN and FF sublayers for this layer
             rnn_layer, ff_layer = self._get_layer_pair(layer_idx)
 
-            # Step 1: Scaffold scan on THIS layer's input
             scaffold_states = self.scaffolds[layer_idx](layer_input)  # [B, T, scaffold_dim]
 
-            # Step 2: Get boundary states at chunk boundaries
             boundary_indices = [m * self.chunk_size for m in range(1, num_chunks)]
             if not boundary_indices:
                 # Single chunk - run layer sequentially
@@ -267,19 +326,16 @@ class ParallelRNNTrainer(nn.Module):
 
             boundary_scaffold = scaffold_states[:, boundary_indices, :]  # [B, M-1, scaffold_dim]
 
-            # Step 3: Translate to target boundary states for this layer
             boundary_states = self.translators[layer_idx](boundary_scaffold)  # [B, M-1, hidden_dim]
 
             # Optional: detach boundary states to isolate gradient paths
             if self.detach_boundary:
                 boundary_states = boundary_states.detach()
 
-            # Step 4: Run RNN sublayer in parallel across chunks
             layer_output, layer_final_state = self._run_rnn_layer_parallel(
                 layer_idx, rnn_layer, layer_input, boundary_states, current_state
             )
 
-            # Step 5: Run FF sublayer on full sequence (no chunking needed)
             layer_output = ff_layer(layer_output)
 
             # Update current_state with the final state from this layer
@@ -296,6 +352,7 @@ class ParallelRNNTrainer(nn.Module):
                         for _ in range(self.num_layers)
                     ]
                     current_state = RNNStateList(new_states)
+                assert current_state is not None
                 new_states = list(current_state.states)
                 new_states[layer_idx] = layer_final_state
                 current_state = RNNStateList(new_states)
@@ -305,6 +362,7 @@ class ParallelRNNTrainer(nn.Module):
 
         # layer_input is now final hidden states [B, T, D]
         hidden_states = layer_input
+        assert current_state is not None
 
         if self.output_head is not None:
             logits = self.output_head(hidden_states)
@@ -327,7 +385,8 @@ class ParallelRNNTrainer(nn.Module):
         """
         if self.output_head is None:
             raise ValueError(
-                "No output_head configured. Set output_head in __init__ or call forward with return_hidden=True."
+                "No output_head configured. Set output_head in __init__ "
+                "or call forward with return_hidden=True."
             )
         return self.output_head(hidden_states)
 
@@ -386,15 +445,46 @@ class ParallelRNNTrainer(nn.Module):
             num_heads = getattr(rnn_layer, "num_heads", self.num_heads)
             head_dim = getattr(rnn_layer, "head_dim", self.hidden_dim // self.num_heads)
 
-            layer_state = RNNState(
-                hidden=torch.zeros(
-                    B,
-                    num_heads,
-                    head_dim,
-                    device=layer_input.device,
-                    dtype=layer_input.dtype,
+            if self.target_type == "m2rnn":
+                key_dim = getattr(rnn_layer, "key_dim", 16)
+                value_dim = getattr(rnn_layer, "value_dim", 16)
+                proj_dim = num_heads * (key_dim + key_dim + value_dim)
+                layer_state = RNNState(
+                    hidden=torch.zeros(
+                        B,
+                        num_heads,
+                        key_dim,
+                        value_dim,
+                        device=layer_input.device,
+                        dtype=layer_input.dtype,
+                    ),
+                    extra={
+                        "conv_cache": torch.zeros(
+                            B, proj_dim, 3, device=layer_input.device, dtype=layer_input.dtype
+                        )
+                    },
                 )
-            )
+            elif self.target_type in ("min_gru", "min_lstm"):
+                # Log-space recurrences require strictly positive initial states.
+                layer_state = RNNState(
+                    hidden=torch.ones(
+                        B,
+                        num_heads,
+                        head_dim,
+                        device=layer_input.device,
+                        dtype=layer_input.dtype,
+                    )
+                )
+            else:
+                layer_state = RNNState(
+                    hidden=torch.zeros(
+                        B,
+                        num_heads,
+                        head_dim,
+                        device=layer_input.device,
+                        dtype=layer_input.dtype,
+                    )
+                )
 
         layer_output, new_state = rnn_layer(layer_input, layer_state)
         layer_output = ff_layer(layer_output)
@@ -476,6 +566,9 @@ class ParallelRNNTrainer(nn.Module):
                     .expand(num_chunks, -1, -1, -1)
                     .reshape(num_chunks * B, *h0.shape[1:])
                 )
+                if chunk_initial_states.dim() == 2:
+                    # Vector-state target (e.g. min_gru/min_lstm): flatten heads.
+                    h0 = h0.reshape(num_chunks * B, -1)
             else:
                 # Single vector: [B, D] -> expand to [M*B, D]
                 h0 = h0.unsqueeze(0).expand(num_chunks, -1, -1).reshape(num_chunks * B, -1)
@@ -722,7 +815,3 @@ class ParallelRNNTrainer(nn.Module):
         for trans in self.translators:
             trans.train(mode)
         return self
-
-    def eval(self) -> ParallelRNNTrainer:
-        """Set evaluation mode."""
-        return self.train(False)

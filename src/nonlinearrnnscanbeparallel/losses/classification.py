@@ -11,8 +11,8 @@ def cross_entropy_loss(
 ) -> torch.Tensor:
     """Cross entropy loss for sequence classification."""
     return nn.functional.cross_entropy(
-        logits.view(-1, logits.size(-1)),
-        targets.view(-1),
+        logits.reshape(-1, logits.size(-1)),
+        targets.reshape(-1),
         ignore_index=ignore_index,
     )
 

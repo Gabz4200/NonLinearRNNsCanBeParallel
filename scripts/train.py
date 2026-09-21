@@ -56,7 +56,8 @@ from nonlinearrnnscanbeparallel.data.graph_reachability import (
     GraphReachabilityDataModule,
 )
 from nonlinearrnnscanbeparallel.data.long_sequence import LongSequenceLMDataModule
-from nonlinearrnnscanbeparallel.models import M2RNN, MLPRNN, RKANRNN  # noqa: F401
+from nonlinearrnnscanbeparallel.data.openthoughts_lm import OpenThoughtsLMDataModule
+from nonlinearrnnscanbeparallel.models.nano_rnn import NanoRNN
 from nonlinearrnnscanbeparallel.models.parallel_wrapper import (
     ParallelRNNTrainer,
     configure_gradient_clipping,
@@ -70,17 +71,22 @@ from nonlinearrnnscanbeparallel.tasks.graph_reachability import (
     MetricsCallback,
     ParallelGraphReachabilityTask,
 )
+from nonlinearrnnscanbeparallel.tasks.language_modeling import BPTTLMTask, ParallelLMTask
 from nonlinearrnnscanbeparallel.training.engine import create_trainer
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
-# model name -> wrapper `target_type` (translator/scaffold state update kind)
-TARGET_TYPE = {
-    "mlp_rnn": "mlp",
-    "rkan_rnn": "rkan",
-    "m2rnn": "m2rnn",
-    "min_gru": "min_gru",
-    "min_lstm": "min_lstm",
+# Training-only model keys forwarded to the Lightning task, not to get_model().
+_TRAINING_KEYS = {
+    "lr",
+    "weight_decay",
+    "warmup_ratio",
+    "min_lr_ratio",
+    "total_steps",
+    "target_grad_clip",
+    "scaffold_grad_clip",
+    "translator_grad_clip",
+    "bptt_max_seq_len",
 }
 
 
@@ -90,12 +96,38 @@ def _dict(node: Any) -> dict[str, Any]:
     return cast(dict[str, Any], dict(out))
 
 
+_CELL_TYPE = {
+    "mlp_rnn": "mlp",
+    "rkan_rnn": "rkan",
+    "m2rnn": "m2rnn",
+    "min_gru": "min_gru",
+    "min_lstm": "min_lstm",
+}
+
+
+def _cell_type(model_name: str, model_cfg: dict[str, Any]) -> str:
+    """Resolve the wrapper ``target_type`` (cell) from the model config.
+
+    nano_rnn selects its mixer explicitly; legacy registry names map to
+    their cell type via ``_CELL_TYPE``.
+    """
+    if model_name == "nano_rnn":
+        return str(model_cfg.get("mixer_type", "min_gru"))
+    explicit = model_cfg.get("target_type")
+    if explicit is not None:
+        return str(explicit)
+    return _CELL_TYPE.get(model_name, model_name)
+
+
 def _build_datamodule(task: str, data_cfg: dict[str, Any]) -> pl.LightningDataModule:
     if task == "ustcon":
         data_cfg.setdefault("max_seq_len", 256)
         return GraphReachabilityDataModule(GraphReachabilityConfig(**data_cfg))
     if task == "long_sequence":
         return LongSequenceLMDataModule(data_cfg)
+    if task == "openthoughts_lm":
+        data_cfg.pop("task", None)
+        return OpenThoughtsLMDataModule(data_cfg)
     return GraphConnectivityDataModule(data_cfg)
 
 
@@ -145,7 +177,7 @@ def _build_task(
     total_steps: int,
     target: torch.nn.Module,
 ) -> tuple[pl.LightningModule, Callback | None, float]:
-    target_type = TARGET_TYPE.get(model_name, model_name)
+    target_type = _cell_type(model_name, model_cfg)
     spec = {**model_cfg, "name": model_name, "total_steps": total_steps}
 
     def _parallel_backbone(default_chunk: int, default_scaffold: int) -> ParallelRNNTrainer:
@@ -156,6 +188,14 @@ def _build_task(
             target_type=target_type,
             detach_boundary=bool(parallel_cfg.get("detach_boundary", False)),
             use_gdn2_init=bool(parallel_cfg.get("use_gdn2_init", True)),
+            scaffold_type=str(parallel_cfg.get("scaffold_type", "min_gru")),
+            scaffold_num_layers=int(parallel_cfg.get("scaffold_num_layers", 1)),
+            translator_type=(
+                str(parallel_cfg["translator_type"])
+                if parallel_cfg.get("translator_type") is not None
+                else None
+            ),
+            translator_num_layers=int(parallel_cfg.get("translator_num_layers", 1)),
         )
 
     def _clip_callback(
@@ -180,6 +220,20 @@ def _build_task(
             )
         return (
             BPTTGraphReachabilityTask(spec, target),
+            None,
+            float(model_cfg.get("target_grad_clip", 1.0)),
+        )
+
+    if task == "openthoughts_lm":
+        if mode == "parallel":
+            backbone = _parallel_backbone(1024, 256)
+            return (
+                ParallelLMTask(spec, backbone),
+                _clip_callback(backbone),
+                0.0,
+            )
+        return (
+            BPTTLMTask(spec, target),
             None,
             float(model_cfg.get("target_grad_clip", 1.0)),
         )
@@ -233,16 +287,17 @@ def _run_one(
         * int(trainer_cfg.get("max_epochs", 10)),
     )
 
-    target = get_model(
-        model_name,
-        input_dim=int(model_cfg.get("hidden_dim", 256)),
-        hidden_dim=int(model_cfg.get("hidden_dim", 256)),
-        num_layers=int(model_cfg.get("num_layers", 2)),
-        num_heads=int(model_cfg.get("num_heads", 4)),
-        dropout=float(model_cfg.get("dropout", 0.1)),
-        num_classes=int(model_cfg.get("num_classes", 2)),
-        vocab_size=int(model_cfg.get("vocab_size", 64)),
-    )
+    model_kwargs = {k: v for k, v in model_cfg.items() if k not in ("name", *_TRAINING_KEYS)}
+    model_kwargs.setdefault("input_dim", int(model_cfg.get("hidden_dim", 256)))
+    target = get_model(model_name, **model_kwargs)
+    if isinstance(target, NanoRNN) and hasattr(datamodule, "tokenizer_vocab_size"):
+        target_vocab = int(datamodule.tokenizer_vocab_size)
+        if target.vocab_size != target_vocab:
+            print(
+                f"WARNING: vocab size mismatch (model={target.vocab_size}, "
+                f"tokenizer={target_vocab}); resizing tied embeddings/lm_head"
+            )
+            target.resize_vocab(target_vocab)
     lit_task, clip_cb, clip_val = _build_task(
         task_name, mode, model_name, model_cfg, parallel_cfg, total_steps, target
     )

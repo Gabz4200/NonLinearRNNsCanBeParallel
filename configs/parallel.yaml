@@ -1,7 +1,12 @@
 # Parallel training configuration
 parallel:
-  chunk_size: 128
+  chunk_size: 1024
   scaffold_dim: 256
+  # Deprecated fallback: ${model.name}. Prefer the explicit keys below.
   target_type: ${model.name}
+  scaffold_type: min_gru       # min_gru | min_lstm
+  scaffold_num_layers: 1       # stacked scaffold layers per outer layer (1..N, typical 1-4)
+  translator_type: null        # null=legacy-from-target | mlp | rkan
+  translator_num_layers: 1     # stacked translator layers per outer layer (1..N, typical 1-4)
   detach_boundary: false
   use_gdn2_init: true

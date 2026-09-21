@@ -9,9 +9,13 @@ from .graph_reachability import (
     GraphReachabilityTask,
     MetricsCallback,
 )
+from .language_modeling import BPTTLMTask, LMLightningTask, ParallelLMTask
 
 __all__ = [
+    "BPTTLMTask",
     "GradientClippingCallback",
     "GraphReachabilityTask",
+    "LMLightningTask",
     "MetricsCallback",
+    "ParallelLMTask",
 ]

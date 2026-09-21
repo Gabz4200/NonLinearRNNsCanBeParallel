@@ -56,6 +56,7 @@ def create_trainer(cfg: dict[str, Any]) -> lightning.Trainer:
         precision=cfg.get("precision", "32-true"),
         log_every_n_steps=cfg.get("log_every_n_steps", 10),
         gradient_clip_val=cfg.get("gradient_clip_val", 1.0),
+        accumulate_grad_batches=cfg.get("accumulate_grad_batches", 1),
         callbacks=callbacks,
         fast_dev_run=cfg.get("fast_dev_run", False),
     )

@@ -278,7 +278,7 @@ class RKANLayer(nn.Module):
         x = x.reshape(-1, self.in_dim)  # [N, in_dim]
 
         # Map inputs into [-1, 1] using rational mapping.
-        # The mapping handles unbounded inputs naturally (e.g., algebraic_infinite maps R -> [-1,1]).
+        # The mapping handles unbounded inputs naturally (algebraic_infinite maps R to [-1, 1]).
         x_mapped = self.mapping(x)  # [N, in_dim]
 
         # Evaluate Jacobi basis functions at each coordinate.
