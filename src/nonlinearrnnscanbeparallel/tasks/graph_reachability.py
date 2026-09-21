@@ -45,23 +45,17 @@ class MetricsCallback(Callback):
         self.epoch_times: list[float] = []
         self.epoch_start_time: float | None = None
 
-    def on_train_epoch_start(
-        self, trainer: pl.Trainer, pl_module: pl.LightningModule
-    ) -> None:
+    def on_train_epoch_start(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
         self.epoch_start_time = time.time()
 
-    def on_train_epoch_end(
-        self, trainer: pl.Trainer, pl_module: pl.LightningModule
-    ) -> None:
+    def on_train_epoch_end(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
         if self.epoch_start_time is not None:
             self.epoch_times.append(time.time() - self.epoch_start_time)
         metrics = trainer.callback_metrics
         if "train/loss_epoch" in metrics:
             self.train_losses.append(float(metrics["train/loss_epoch"]))
 
-    def on_validation_end(
-        self, trainer: pl.Trainer, pl_module: pl.LightningModule
-    ) -> None:
+    def on_validation_end(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
         if trainer.sanity_checking:
             return
         metrics = trainer.callback_metrics
@@ -84,14 +78,10 @@ class GraphReachabilityTask(pl.LightningModule):
         super().__init__()
         self.save_hyperparameters(ignore=["backbone"])
         self.backbone = backbone
-        self.input_embed = nn.Embedding(
-            model_spec["vocab_size"], model_spec["hidden_dim"]
-        )
+        self.input_embed = nn.Embedding(model_spec["vocab_size"], model_spec["hidden_dim"])
         self.criterion = cross_entropy_loss
         # Chunked BPTT boundary; 0 disables chunking (full-sequence BPTT).
-        self._max_seq_len = int(
-            model_spec.get("bptt_max_seq_len", model_spec.get("seq_len", 256))
-        )
+        self._max_seq_len = int(model_spec.get("bptt_max_seq_len", model_spec.get("seq_len", 256)))
         self._total_steps = max(1, int(model_spec.get("total_steps", 1)))
         self.model_spec = model_spec
 
@@ -157,15 +147,11 @@ class GraphReachabilityTask(pl.LightningModule):
         predictions = logits[row_indices, sequence_indices].argmax(dim=-1)
         return (predictions == reachability_labels[row_indices]).float().mean()
 
-    def validation_step(
-        self, batch: dict[str, torch.Tensor], batch_idx: int
-    ) -> None:
+    def validation_step(self, batch: dict[str, torch.Tensor], batch_idx: int) -> None:
         input_ids = batch["input_ids"]
         logits, _ = self._forward(input_ids)
         loss = self.criterion(logits, batch["labels"])
-        reachability_acc = self._answer_metrics(
-            input_ids, logits, batch["reachability_label"]
-        )
+        reachability_acc = self._answer_metrics(input_ids, logits, batch["reachability_label"])
         self.log("val/reachability_acc", reachability_acc, on_epoch=True, prog_bar=True)
         self.log("val/accuracy", reachability_acc, on_epoch=True, prog_bar=True)
         self.log("val/loss", loss, on_epoch=True, prog_bar=True)
@@ -195,9 +181,7 @@ class GraphReachabilityTask(pl.LightningModule):
             eps=1e-8,
         )
         total_steps = max(1, int(getattr(self, "_total_steps", 1)))
-        warmup_steps = max(
-            1, int(total_steps * float(self.model_spec.get("warmup_ratio", 0.1)))
-        )
+        warmup_steps = max(1, int(total_steps * float(self.model_spec.get("warmup_ratio", 0.1))))
         scheduler = get_cosine_schedule_with_warmup(
             optimizer,
             num_warmup_steps=warmup_steps,

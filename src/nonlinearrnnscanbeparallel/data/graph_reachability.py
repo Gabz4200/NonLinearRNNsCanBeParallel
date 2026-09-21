@@ -246,8 +246,10 @@ class GraphReachabilityDataset(Dataset):
         while (
             reachable_count < target_reachable or unreachable_count < target_unreachable
         ) and attempts < max_attempts:
-            sample_seed = self.config.seed + attempts + (
-                100000 if self.split == "val" else 200000 if self.split == "test" else 0
+            sample_seed = (
+                self.config.seed
+                + attempts
+                + (100000 if self.split == "val" else 200000 if self.split == "test" else 0)
             )
             torch.manual_seed(sample_seed)
             random.seed(sample_seed)
