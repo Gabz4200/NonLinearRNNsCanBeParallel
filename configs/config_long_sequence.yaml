@@ -1,20 +1,19 @@
 defaults:
-  - model
-  - data
-  - trainer
+  - model_long
+  - data_long
+  - trainer_long
   - runtime
   - parallel
   - _self_
 
-# Task type: sorted_graph_connectivity | ustcon | long_sequence
-task: sorted_graph_connectivity
-
-# Mode: parallel | bptt (single value kept for compatibility)
+task: long_sequence
 mode: parallel
 
 # Models in the run: mlp_rnn | rkan_rnn | m2rnn | min_gru | min_lstm
 models:
   - mlp_rnn
+  - rkan_rnn
+  - m2rnn
 
 # Training modes to run: parallel | bptt (one or both)
 modes:
@@ -25,3 +24,4 @@ fast_dev_run: false
 callbacks:
   model_checkpoint: true
   early_stopping: true
+  gradient_clipping: true
