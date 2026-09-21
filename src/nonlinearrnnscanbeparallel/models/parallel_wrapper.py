@@ -11,12 +11,12 @@ The wrapper exposes hidden states so custom output heads and losses can be attac
 
 from __future__ import annotations
 
-from typing import Callable, Optional, Any, Dict, List
+from collections.abc import Callable
 
 import lightning as pl
 import torch
 from torch import nn
-from torch.optim.lr_scheduler import CosineAnnealingLR, LambdaLR, SequentialLR
+from torch.optim.lr_scheduler import LambdaLR
 
 from .base import RNNState, RNNStateList
 from .scaffold import MinGRUScaffold

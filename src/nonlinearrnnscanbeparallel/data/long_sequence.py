@@ -59,7 +59,7 @@ class LongSequenceCopyDataset(Dataset):
         # Validate
         content_len = seq_len - 4 - delay_len  # BOS, SEP, CUE, delay, EOS
         if content_len <= 0:
-            raise ValueError(f"seq_len too small for delay_len")
+            raise ValueError("seq_len too small for delay_len")
 
     def __len__(self) -> int:
         return self.num_samples

@@ -7,7 +7,6 @@ import torch
 from torch import nn
 from torch.utils.data import DataLoader
 
-from nonlinearrnnscanbeparallel.models.base import RNNState, RNNStateList
 from nonlinearrnnscanbeparallel.models.parallel_wrapper import get_cosine_schedule_with_warmup
 from nonlinearrnnscanbeparallel.tasks.graph_reachability import (
     BPTTGraphReachabilityTask,
@@ -154,7 +153,10 @@ def test_bptt_scheduler_uses_configured_total_steps(monkeypatch) -> None:
             min_lr_ratio=min_lr_ratio,
         )
 
-    monkeypatch.setattr("nonlinearrnnscanbeparallel.tasks.graph_reachability.get_cosine_schedule_with_warmup", capture_scheduler)
+    monkeypatch.setattr(
+        "nonlinearrnnscanbeparallel.tasks.graph_reachability.get_cosine_schedule_with_warmup",
+        capture_scheduler,
+    )
 
     optimizer_config = task.configure_optimizers()
 
