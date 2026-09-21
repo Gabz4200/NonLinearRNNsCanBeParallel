@@ -257,7 +257,11 @@ class RKANLayer(nn.Module):
         )
 
         # Outer linear projection to output dim.
-        self.output_weight = nn.Parameter(torch.randn(out_dim, num_basis) * 0.1)
+        # Initialize with smaller scale to account for Jacobi polynomial magnitudes
+        # Jacobi polynomials J_k can have magnitude up to ~k at boundaries.
+        # Use scale ~ 1/sqrt(num_basis * degree) for stability.
+        init_scale = 0.1 / max(1.0, (self.num_basis * self.degree) ** 0.5)
+        self.output_weight = nn.Parameter(torch.randn(out_dim, num_basis) * init_scale)
         if bias:
             self.bias = nn.Parameter(torch.zeros(out_dim))
         else:
@@ -275,11 +279,9 @@ class RKANLayer(nn.Module):
         original_shape = x.shape[:-1]
         x = x.reshape(-1, self.in_dim)  # [N, in_dim]
 
-        # Bounded-range sigmoid activation before mapping.
-        x_bounded = torch.sigmoid(x)
-
-        # Map bounded inputs into [-1, 1].
-        x_mapped = self.mapping(x_bounded)  # [N, in_dim]
+        # Map inputs into [-1, 1] using rational mapping.
+        # The mapping handles unbounded inputs naturally (e.g., algebraic_infinite maps R -> [-1,1]).
+        x_mapped = self.mapping(x)  # [N, in_dim]
 
         # Evaluate Jacobi basis functions at each coordinate.
         jacobi_vals = self.jacobi(x_mapped.unsqueeze(-1))  # [N, in_dim, degree+1]
@@ -287,11 +289,14 @@ class RKANLayer(nn.Module):
         if self.rkan_type == "jacobi":
             # Skip J_0; it is constant so it adds no signal.
             phi = jacobi_vals[..., 1 : self.num_basis + 1]  # [N, in_dim, num_basis]
+            # Clamp to prevent numerical instability from high-degree polynomials at boundaries
+            phi = torch.clamp(phi, min=-10.0, max=10.0)
         else:
             phi = self._pade_basis(jacobi_vals)  # [N, in_dim, num_basis]
 
         # Inner sum over input coordinates.
-        phi_agg = phi.sum(dim=1)
+        # Normalize by sqrt(in_dim) to prevent magnitude explosion with many input coordinates.
+        phi_agg = phi.sum(dim=1) / (self.in_dim**0.5)
 
         # Outer linear projection.
         out = phi_agg @ self.output_weight.T  # [N, out_dim]
