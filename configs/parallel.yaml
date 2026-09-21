@@ -1,0 +1,7 @@
+# Parallel training configuration
+parallel:
+  chunk_size: 128
+  scaffold_dim: 256
+  target_type: ${model.name}
+  detach_boundary: false
+  use_gdn2_init: true

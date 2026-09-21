@@ -1,0 +1,12 @@
+data:
+  num_samples: 1000
+  min_nodes: 10
+  max_nodes: 20
+  edge_prob: 0.3
+  vocab_size: 64
+  max_seq_len: 256
+  batch_size: 32
+  num_workers: 0
+  val_split: 0.1
+  test_split: 0.1
+  seed: 42

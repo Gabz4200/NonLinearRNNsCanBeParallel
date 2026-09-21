@@ -1,0 +1,11 @@
+trainer:
+  accelerator: "auto"
+  devices: 1
+  max_epochs: 20
+  max_steps: -1
+  precision: "32-true"
+  log_every_n_steps: 50
+  gradient_clip_val: 0.0  # We handle clipping manually per-component
+  accumulate_grad_batches: 4
+  val_check_interval: 1.0
+  check_val_every_n_epoch: 1

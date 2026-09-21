@@ -1,0 +1,13 @@
+data:
+  task_type: "copy"
+  num_samples: 2000
+  vocab_size: 128
+  seq_len: 16384
+  delay_len: 100
+  pattern_len: 10
+  num_patterns: 5
+  seed: 42
+  val_split: 0.1
+  test_split: 0.1
+  batch_size: 4
+  num_workers: 2

@@ -1,0 +1,18 @@
+model:
+  name: "mlp_rnn"
+  hidden_dim: 512
+  num_layers: 4
+  num_heads: 8
+  dropout: 0.1
+  mlp_hidden_mult: 4
+  mlp_num_layers: 2
+  rkan_degree: 3
+  rkan_alpha: 1.0
+  rkan_beta: 1.0
+  rkan_iota: 1.0
+  rkan_mapping: "algebraic_infinite"
+  rkan_type: "jacobi"
+  rkan_num_basis: 4
+  num_classes: 128
+  vocab_size: 128
+  max_seq_len: 16384

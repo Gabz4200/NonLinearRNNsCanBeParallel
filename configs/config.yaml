@@ -3,7 +3,22 @@ defaults:
   - data
   - trainer
   - runtime
+  - parallel
   - _self_
+
+# Task type: sorted_graph_connectivity | ustcon | long_sequence
+task: sorted_graph_connectivity
+
+# Mode: parallel | bptt (single value kept for compatibility)
+mode: parallel
+
+# Models in the run: mlp_rnn | rkan_rnn | m2rnn | min_gru | min_lstm
+models:
+  - mlp_rnn
+
+# Training modes to run: parallel | bptt (one or both)
+modes:
+  - parallel
 
 # Optional: override specific keys here
 fast_dev_run: false
