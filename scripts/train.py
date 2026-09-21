@@ -212,7 +212,7 @@ def _run_one(
     model_name: str,
     cfg: DictConfig,
     results_dir: Path,
-) -> dict[str, Any]:
+) -> tuple[dict[str, Any], dict[str, list[float]]]:
     data_cfg = _dict(cfg.get("data", {}))
     model_cfg = _dict(cfg.get("model", {}))
     parallel_cfg = _dict(cfg.get("parallel", {}))
@@ -247,9 +247,8 @@ def _run_one(
 
     trainer_cfg["gradient_clip_val"] = clip_val
     trainer = create_trainer(trainer_cfg)
-    extra: list[Callback] = [clip_cb] if clip_cb is not None else []
-    if task_name == "ustcon":
-        extra.append(MetricsCallback())
+    metric_cb = MetricsCallback()
+    extra = [cb for cb in (clip_cb, metric_cb) if cb is not None]
     if extra:
         cast(Any, trainer).callbacks.extend(extra)
 
@@ -258,13 +257,64 @@ def _run_one(
     elapsed = time.time() - start
 
     metrics = {k: float(v) for k, v in trainer.callback_metrics.items()}
-    return {
+    result = {
         "model": model_name,
         "mode": mode,
         "time_seconds": elapsed,
         "trainable_params": sum(p.numel() for p in lit_task.parameters() if p.requires_grad),
         "metrics": metrics,
     }
+    curves = {
+        "train_losses": metric_cb.train_losses,
+        "val_losses": metric_cb.val_losses,
+    }
+    return result, curves
+
+
+def _plot_results(runs: list[dict[str, Any]], results_dir: Path) -> None:
+    """Save per-run loss curves and a validation-loss comparison into results_dir."""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    labeled = [(f"{r['model']} [{r['mode']}]", r["train_losses"], r["val_losses"]) for r in runs]
+    if not labeled:
+        return
+    results_dir.mkdir(parents=True, exist_ok=True)
+
+    n = len(labeled)
+    fig, axes = plt.subplots(1, n, figsize=(4.5 * n, 4), squeeze=False)
+    for ax, (label, train, val) in zip(axes[0], labeled, strict=True):
+        if train:
+            ax.plot(range(len(train)), train, label="train", marker="o")
+        if val:
+            ax.plot(range(len(val)), val, label="val", marker="s")
+        ax.set_yscale("log")
+        ax.set_xlabel("epoch")
+        ax.set_ylabel("loss")
+        ax.set_title(label)
+        ax.legend()
+        ax.grid(True, which="both", alpha=0.3)
+    fig.tight_layout()
+    fig.savefig(results_dir / "loss_curves.png")
+    plt.close(fig)
+
+    fig, ax = plt.subplots(figsize=(8, 5))
+    for label, train, val in labeled:
+        if val:
+            ax.plot(range(len(val)), val, label=label, marker="s")
+        elif train:
+            ax.plot(range(len(train)), train, label=f"{label} (train)", marker="o")
+    ax.set_yscale("log")
+    ax.set_xlabel("epoch")
+    ax.set_ylabel("validation loss")
+    ax.set_title("Validation loss comparison")
+    ax.legend()
+    ax.grid(True, which="both", alpha=0.3)
+    fig.tight_layout()
+    fig.savefig(results_dir / "val_loss_comparison.png")
+    plt.close(fig)
 
 
 @hydra.main(version_base=None, config_path="../configs", config_name="config")
@@ -282,11 +332,14 @@ def main(cfg: DictConfig) -> None:
     print(f"\n{'=' * 60}\nRUN: {run_id}\nResults: {results_dir}\n{'=' * 60}")
 
     all_results: list[dict[str, Any]] = []
+    curves_by_run: list[dict[str, Any]] = []
     for mode in modes:
         for model_name in models:
             print(f"\n>>> training {model_name} [{mode.upper()}] on {task_name}")
             try:
-                all_results.append(_run_one(task_name, mode, model_name, cfg, results_dir))
+                result, curves = _run_one(task_name, mode, model_name, cfg, results_dir)
+                all_results.append(result)
+                curves_by_run.append({"model": model_name, "mode": mode, **curves})
             except Exception as error:  # noqa: BLE001
                 import traceback
 
@@ -294,6 +347,7 @@ def main(cfg: DictConfig) -> None:
                 traceback.print_exc()
                 all_results.append({"model": model_name, "mode": mode, "error": str(error)})
 
+    _plot_results(curves_by_run, results_dir)
     summary = {
         "timestamp": timestamp,
         "task": task_name,
