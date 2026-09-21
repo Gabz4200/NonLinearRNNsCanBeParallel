@@ -34,7 +34,7 @@ class RKANRNN(BaseRNNModel):
         rkan_iota: float = 1.0,
         rkan_mapping: str = "algebraic_infinite",
         rkan_type: str = "jacobi",
-        rkan_num_basis: int = 4,
+        rkan_num_basis: int = 8,
         num_classes: int = 2,
         **kwargs: object,
     ) -> None:
