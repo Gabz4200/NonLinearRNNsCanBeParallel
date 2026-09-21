@@ -32,10 +32,3 @@ def rnn_step_reference(
     state = [RNNState(hidden=h_prev)]
     _, new_states = rnn_layer(x.unsqueeze(1), state)
     return new_states[0].hidden
-
-
-class RNNStepReference:
-    """Reference implementation of RNN step."""
-
-    def __call__(self, x: torch.Tensor, h_prev: torch.Tensor, rnn_layer: nn.Module) -> torch.Tensor:
-        return rnn_step_reference(x, h_prev, rnn_layer)

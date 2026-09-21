@@ -38,6 +38,8 @@ SOURCE_MARKER = 7
 TARGET_MARKER = 8
 ANSWER_MARKER = 9  # Position where model predicts 0/1
 
+SPLIT_SEED_OFFSETS = {"train": 0, "val": 100000, "test": 200000}
+
 
 @dataclass
 class GraphReachabilityConfig:
@@ -56,31 +58,34 @@ class GraphReachabilityConfig:
     num_workers: int = 4
 
     def __post_init__(self) -> None:
-        if self.num_samples <= 0:
-            raise ValueError("num_samples must be positive")
-        if self.min_nodes < 1:
-            raise ValueError("min_nodes must be >= 1")
-        if self.max_nodes < self.min_nodes:
-            raise ValueError("max_nodes must be >= min_nodes")
-        if not (0.0 <= self.edge_prob <= 1.0):
-            raise ValueError("edge_prob must be in [0.0, 1.0]")
-        if self.max_seq_len < 9 + 2 * self.min_nodes:
-            raise ValueError(
+        constraints: list[tuple[bool, str]] = [
+            (self.num_samples <= 0, "num_samples must be positive"),
+            (self.min_nodes < 1, "min_nodes must be >= 1"),
+            (self.max_nodes < self.min_nodes, "max_nodes must be >= min_nodes"),
+            (not (0.0 <= self.edge_prob <= 1.0), "edge_prob must be in [0.0, 1.0]"),
+            (
+                self.max_seq_len < 9 + 2 * self.min_nodes,
                 f"max_seq_len ({self.max_seq_len}) must be >= "
-                f"9 + 2*min_nodes ({9 + 2 * self.min_nodes}) to fit the shortest legal sequence"
-            )
-        if self.num_workers < 0:
-            raise ValueError("num_workers must be non-negative")
-        # Vocabulary must accommodate node tokens up to vocab_offset + max_nodes - 1
-        if self.vocab_size <= 10 + self.max_nodes - 1:
-            raise ValueError(
+                f"9 + 2*min_nodes ({9 + 2 * self.min_nodes}) to fit the shortest legal sequence",
+            ),
+            (self.num_workers < 0, "num_workers must be non-negative"),
+            (
+                self.vocab_size <= 10 + self.max_nodes - 1,
                 f"vocab_size ({self.vocab_size}) must be > "
-                f"10 + max_nodes - 1 ({10 + self.max_nodes - 1})"
-            )
-        if self.val_split is not None and not (0.0 < self.val_split < 1.0):
-            raise ValueError("val_split must be in (0.0, 1.0) or None")
-        if self.test_split is not None and not (0.0 < self.test_split < 1.0):
-            raise ValueError("test_split must be in (0.0, 1.0) or None")
+                f"10 + max_nodes - 1 ({10 + self.max_nodes - 1})",
+            ),
+            (
+                self.val_split is not None and not (0.0 < self.val_split < 1.0),
+                "val_split must be in (0.0, 1.0) or None",
+            ),
+            (
+                self.test_split is not None and not (0.0 < self.test_split < 1.0),
+                "test_split must be in (0.0, 1.0) or None",
+            ),
+        ]
+        for failed, message in constraints:
+            if failed:
+                raise ValueError(message)
 
 
 def generate_undirected_graph(
@@ -246,11 +251,7 @@ class GraphReachabilityDataset(Dataset):
         while (
             reachable_count < target_reachable or unreachable_count < target_unreachable
         ) and attempts < max_attempts:
-            sample_seed = (
-                self.config.seed
-                + attempts
-                + (100000 if self.split == "val" else 200000 if self.split == "test" else 0)
-            )
+            sample_seed = self.config.seed + attempts + SPLIT_SEED_OFFSETS.get(self.split, 0)
             torch.manual_seed(sample_seed)
             random.seed(sample_seed)
 

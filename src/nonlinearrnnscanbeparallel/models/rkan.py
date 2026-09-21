@@ -18,8 +18,10 @@ from __future__ import annotations
 import math
 
 import torch
+import torch.nn.functional as F
 from torch import nn
-from torch.nn import functional
+
+from .base import RMSNorm
 
 
 def _inv_elu(y: float) -> float:
@@ -67,12 +69,12 @@ class JacobiPolynomial(nn.Module):
     @property
     def alpha(self) -> torch.Tensor:
         """Effective α = ELU(α_raw), guaranteed > -1."""
-        return functional.elu(self.alpha_raw)
+        return F.elu(self.alpha_raw)
 
     @property
     def beta(self) -> torch.Tensor:
         """Effective β = ELU(β_raw), guaranteed > -1."""
-        return functional.elu(self.beta_raw)
+        return F.elu(self.beta_raw)
 
     def coefficients(self, alpha: torch.Tensor, beta: torch.Tensor) -> torch.Tensor:
         """Coefficients of the Jacobi polynomial expansion.
@@ -172,27 +174,25 @@ class RationalMapping(nn.Module):
     @property
     def iota(self) -> torch.Tensor:
         """Positive ι via SoftPlus, per the paper."""
-        return functional.softplus(self.iota_raw)
+        return F.softplus(self.iota_raw)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Map x ∈ Ω to [-1, 1]."""
         iota = self.iota
         d0 = self.d0
         d1 = self.d1
-
-        if self.mapping_type == "linear":
-            return (2 * x - d0 - d1) / (d1 - d0)
-        elif self.mapping_type == "logarithmic_semi":
-            return 2 * torch.tanh(x / iota) - 1
-        elif self.mapping_type == "algebraic_semi":
-            return (x - iota) / (x + iota)
-        elif self.mapping_type == "exponential_semi":
-            return 1 - 2 * torch.exp(-x / iota)
-        elif self.mapping_type == "logarithmic_infinite":
-            return torch.tanh(x / iota)
-        elif self.mapping_type == "algebraic_infinite":
-            return x / torch.sqrt(x * x + iota * iota)
-        raise ValueError(f"Unknown mapping type: {self.mapping_type}")
+        mappings = {
+            "linear": lambda: (2 * x - d0 - d1) / (d1 - d0),
+            "logarithmic_semi": lambda: 2 * torch.tanh(x / iota) - 1,
+            "algebraic_semi": lambda: (x - iota) / (x + iota),
+            "exponential_semi": lambda: 1 - 2 * torch.exp(-x / iota),
+            "logarithmic_infinite": lambda: torch.tanh(x / iota),
+            "algebraic_infinite": lambda: x / torch.sqrt(x * x + iota * iota),
+        }
+        try:
+            return mappings[self.mapping_type]()
+        except KeyError:
+            raise ValueError(f"Unknown mapping type: {self.mapping_type}") from None
 
 
 class RKANLayer(nn.Module):
@@ -240,9 +240,7 @@ class RKANLayer(nn.Module):
         self._jacobi_degree = max(degree, num_basis)
         self.jacobi = JacobiPolynomial(self._jacobi_degree, alpha, beta)
 
-        if rkan_type == "jacobi":
-            pass  # Jacobi basis J_1 through J_num_basis selected in forward.
-        else:
+        if rkan_type == "pade":
             # Pade coefficients indexed by input, basis, and Jacobi count.
             # Last axis matches the Jacobi basis count.
             basis_count = self._jacobi_degree + 1
@@ -372,8 +370,6 @@ class RationalFeedForward(nn.Module):
         dropout: float = 0.1,
     ) -> None:
         super().__init__()
-        from .base import RMSNorm
-
         self.norm = RMSNorm(hidden_dim)
         self.rkan1 = RKANLayer(
             hidden_dim,

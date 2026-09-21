@@ -7,44 +7,47 @@ from typing import Any
 import lightning
 from lightning.pytorch.callbacks import Callback, EarlyStopping, ModelCheckpoint
 
-from nonlinearrnnscanbeparallel.callbacks.logging import MetricsLogger
 from nonlinearrnnscanbeparallel.callbacks.taichi_init import TaichiInitCallback
+
+
+def _model_checkpoint() -> ModelCheckpoint:
+    return ModelCheckpoint(
+        monitor="val/loss",
+        mode="min",
+        save_top_k=1,
+        filename="best-{epoch:02d}-{val_loss:.4f}",
+    )
+
+
+def _early_stopping() -> EarlyStopping:
+    return EarlyStopping(monitor="val/loss", patience=10, mode="min")
+
+
+CALLBACKS = {
+    "model_checkpoint": _model_checkpoint,
+    "early_stopping": _early_stopping,
+    "taichi_init": TaichiInitCallback,
+}
+
+
+def _iter_callback_flags(callbacks_cfg: object) -> list[tuple[str, bool]]:
+    if isinstance(callbacks_cfg, dict):
+        return [(str(name), bool(enabled)) for name, enabled in callbacks_cfg.items()]
+    if isinstance(callbacks_cfg, (list, tuple)):
+        return [(str(name), True) for name in callbacks_cfg]
+    return []
 
 
 def create_trainer(cfg: dict[str, Any]) -> lightning.Trainer:
     """Create a Lightning Trainer from config."""
     callbacks: list[Callback] = []
 
-    callbacks_cfg = cfg.get("callbacks", {})
-    callbacks_items = (
-        callbacks_cfg.items()
-        if isinstance(callbacks_cfg, dict)
-        else ((k, True) for k in callbacks_cfg)
-    )
-    for name, enabled in callbacks_items:
+    for name, enabled in _iter_callback_flags(cfg.get("callbacks", {})):
         if not enabled:
             continue
-        if name == "model_checkpoint":
-            callbacks.append(
-                ModelCheckpoint(
-                    monitor="val/loss",
-                    mode="min",
-                    save_top_k=1,
-                    filename="best-{epoch:02d}-{val_loss:.4f}",
-                )
-            )
-        elif name == "early_stopping":
-            callbacks.append(
-                EarlyStopping(
-                    monitor="val/loss",
-                    patience=10,
-                    mode="min",
-                )
-            )
-        elif name == "taichi_init":
-            callbacks.append(TaichiInitCallback())
-        elif name == "metrics_logger":
-            callbacks.append(MetricsLogger())
+        factory = CALLBACKS.get(name)
+        if factory is not None:
+            callbacks.append(factory())
 
     return lightning.Trainer(
         accelerator=cfg.get("accelerator", "auto"),

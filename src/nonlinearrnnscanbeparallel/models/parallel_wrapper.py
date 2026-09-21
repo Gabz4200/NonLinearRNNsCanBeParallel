@@ -11,41 +11,17 @@ The wrapper exposes hidden states so custom output heads and losses can be attac
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable
 
-import lightning as pl
 import torch
+import torch.nn.functional as F
 from torch import nn
 from torch.optim.lr_scheduler import LambdaLR
 
 from .base import RNNState, RNNStateList
 from .scaffold import MinGRUScaffold
 from .translator import Translator
-
-
-class BoundaryErrorCallback(pl.Callback):
-    """Callback to monitor boundary reconstruction error during training.
-
-    Tracks how well the scaffold+translator approximates the true boundary states.
-    """
-
-    def __init__(self, log_every_n_steps: int = 100):
-        self.log_every_n_steps = log_every_n_steps
-        self.step_count = 0
-
-    def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
-        self.step_count += 1
-        if self.step_count % self.log_every_n_steps == 0:
-            # Try to compute boundary error if the wrapper supports it
-            if hasattr(pl_module, "wrapper") and hasattr(
-                pl_module.wrapper, "compute_boundary_error"
-            ):
-                try:
-                    # We need a sequential forward pass to get true states
-                    # This is expensive, so we do it periodically
-                    pass  # Optional: implement if needed
-                except Exception:
-                    pass
 
 
 def get_cosine_schedule_with_warmup(
@@ -61,9 +37,13 @@ def get_cosine_schedule_with_warmup(
         )
         return max(min_lr_ratio, 0.5 * (1.0 + math.cos(math.pi * progress)))
 
-    import math
-
     return LambdaLR(optimizer, lr_lambda)
+
+
+def _clip_params(params, bound: float) -> None:
+    for param in params:
+        if param.grad is not None:
+            param.grad.data.clamp_(-bound, bound)
 
 
 def configure_gradient_clipping(
@@ -81,22 +61,11 @@ def configure_gradient_clipping(
     # This function returns a callable that can be used with Lightning's
     # configure_gradient_clipping hook
     def clip_gradients():
-        # Target RNN parameters
-        for param in model.target.parameters():
-            if param.grad is not None:
-                param.grad.data.clamp_(-target_grad_clip, target_grad_clip)
-
-        # Scaffold parameters
+        _clip_params(model.target.parameters(), target_grad_clip)
         for scaffold in model.scaffolds:
-            for param in scaffold.parameters():
-                if param.grad is not None:
-                    param.grad.data.clamp_(-scaffold_grad_clip, scaffold_grad_clip)
-
-        # Translator parameters
+            _clip_params(scaffold.parameters(), scaffold_grad_clip)
         for translator in model.translators:
-            for param in translator.parameters():
-                if param.grad is not None:
-                    param.grad.data.clamp_(-translator_grad_clip, translator_grad_clip)
+            _clip_params(translator.parameters(), translator_grad_clip)
 
     return clip_gradients
 
@@ -133,30 +102,6 @@ def _reshape_from_chunks(x_chunks: torch.Tensor, B: int, T: int, num_chunks: int
     # [M*B, C, D] -> [M, B, C, D] -> [B, M, C, D] -> [B, T, D]
     x = x_chunks.view(num_chunks, B, x_chunks.shape[1], x_chunks.shape[2]).transpose(0, 1)
     return x.reshape(B, T, x_chunks.shape[2])
-
-
-def _expand_states_for_chunks(
-    boundary_states: list[torch.Tensor],
-    num_chunks: int,
-    B: int,
-) -> list[torch.Tensor]:
-    """Expand boundary states [B, M-1, D] to per-chunk initial states [M*B, ...].
-
-    First chunk uses zeros, subsequent chunks use translated boundaries.
-    """
-    # boundary_states: list of [B, M-1, D] per layer
-    # Returns: list of [M*B, ...] per layer
-    expanded = []
-    for bs in boundary_states:
-        # bs: [B, M-1, D]
-        # First chunk: zeros
-        zero_state = torch.zeros(B, 1, bs.shape[2], device=bs.device, dtype=bs.dtype)
-        # Concatenate: [B, M, D]
-        all_boundaries = torch.cat([zero_state, bs], dim=1)  # [B, M, D]
-        # Expand to chunks: [B, M, D] -> [M, B, D] -> [M*B, D]
-        all_boundaries = all_boundaries.transpose(0, 1).reshape(num_chunks * B, -1)
-        expanded.append(all_boundaries)
-    return expanded
 
 
 class ParallelRNNTrainer(nn.Module):
@@ -342,7 +287,7 @@ class ParallelRNNTrainer(nn.Module):
                 # Update the state for this layer with the final state
                 new_states = list(current_state.states)
                 new_states[layer_idx] = layer_final_state
-                current_state = RNNStateList.from_list(new_states)
+                current_state = RNNStateList(new_states)
             else:
                 # Initialize current_state from layer_final_state for the first layer
                 if layer_idx == 0:
@@ -350,10 +295,10 @@ class ParallelRNNTrainer(nn.Module):
                         RNNState(hidden=torch.zeros_like(layer_final_state.hidden))
                         for _ in range(self.num_layers)
                     ]
-                    current_state = RNNStateList.from_list(new_states)
+                    current_state = RNNStateList(new_states)
                 new_states = list(current_state.states)
                 new_states[layer_idx] = layer_final_state
-                current_state = RNNStateList.from_list(new_states)
+                current_state = RNNStateList(new_states)
 
             # Prepare for next layer
             layer_input = layer_output
@@ -458,14 +403,14 @@ class ParallelRNNTrainer(nn.Module):
         if state is not None:
             new_states = list(state.states)
             new_states[layer_idx] = new_state
-            return layer_output, RNNStateList.from_list(new_states)
+            return layer_output, RNNStateList(new_states)
         else:
             # Create new state list
             new_states = [
                 RNNState(hidden=torch.zeros_like(new_state.hidden)) for _ in range(self.num_layers)
             ]
             new_states[layer_idx] = new_state
-            return layer_output, RNNStateList.from_list(new_states)
+            return layer_output, RNNStateList(new_states)
 
     def _run_rnn_layer_parallel(
         self,
@@ -508,7 +453,7 @@ class ParallelRNNTrainer(nn.Module):
         # For min_gru/min_lstm, boundary states must be positive for log-space operations
         # Apply softplus to ensure positive states (zeros become small positive)
         if self.target_type in ("min_gru", "min_lstm"):
-            all_boundaries = torch.nn.functional.softplus(all_boundaries)
+            all_boundaries = F.softplus(all_boundaries)
 
         chunk_initial_states = all_boundaries.transpose(0, 1).reshape(
             num_chunks * B, -1

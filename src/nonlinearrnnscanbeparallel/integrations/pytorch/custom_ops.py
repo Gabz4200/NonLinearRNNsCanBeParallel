@@ -12,7 +12,6 @@ def rnn_step_custom_op(
     rnn_layer: nn.Module,
 ) -> torch.Tensor:
     """Reference wrapper; module usage excluded from op boundary."""
-    from nonlinearrnnscanbeparallel.ops.rnn_step_impls import build_op
+    from nonlinearrnnscanbeparallel.ops.rnn_step import rnn_step_reference
 
-    op = build_op("reference")
-    return op(x, h_prev, rnn_layer)
+    return rnn_step_reference(x, h_prev, rnn_layer)

@@ -114,7 +114,7 @@ class GraphReachabilityTask(pl.LightningModule):
                     )
                     for item in state.states
                 ]
-                state = RNNStateList.from_list(detached)
+                state = RNNStateList(detached)
         return torch.cat(outputs, dim=1), state
 
     def _forward(

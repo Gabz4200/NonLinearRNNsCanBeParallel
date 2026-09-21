@@ -1,10 +1,9 @@
-"""Base model interface with Protocol and dataclasses."""
+"""Base model interface with dataclasses."""
 
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Protocol, runtime_checkable
 
 import torch
 from torch import nn
@@ -33,10 +32,6 @@ class RNNStateList:
     def __iter__(self):
         return iter(self.states)
 
-    @classmethod
-    def from_list(cls, states: list[RNNState]) -> RNNStateList:
-        return cls(states)
-
 
 @dataclass
 class RNNOutput:
@@ -44,55 +39,6 @@ class RNNOutput:
 
     logits: torch.Tensor  # [B, T, C] or [B, C] for step
     states: RNNStateList
-
-
-@runtime_checkable
-class RNNModule(Protocol):
-    """Protocol defining the interface for all RNN models.
-
-    Any class implementing these methods conforms to the RNN interface,
-    enabling structural subtyping without inheritance coupling.
-    """
-
-    input_dim: int
-    hidden_dim: int
-    num_layers: int
-    num_heads: int
-    dropout: float
-
-    def forward(
-        self, x: torch.Tensor, state: RNNStateList | None = None
-    ) -> tuple[torch.Tensor, RNNStateList]:
-        """
-        Forward pass (cumsum-style: processes full sequence).
-
-        Args:
-            x: Input tensor [B, T, D]
-            state: Optional recurrent states (one per RNN layer)
-
-        Returns:
-            Tuple of (output [B, T, D], new_states)
-        """
-        ...
-
-    def step(
-        self, x_t: torch.Tensor, state: RNNStateList | None = None
-    ) -> tuple[torch.Tensor, RNNStateList]:
-        """
-        Single-token autoregressive step.
-
-        Args:
-            x_t: Input tensor [B, D]
-            state: Optional recurrent states (one per RNN layer)
-
-        Returns:
-            Tuple of (output [B, D], new_states)
-        """
-        ...
-
-    def init_state(self, batch_size: int, device: torch.device) -> RNNStateList:
-        """Initialize recurrent states for a batch."""
-        ...
 
 
 class BaseRNNModel(nn.Module, ABC):
@@ -168,8 +114,4 @@ class RMSNorm(nn.Module):
         return x * norm * self.weight
 
 
-class SiLU(nn.Module):
-    """SiLU (Swish) activation: x * sigmoid(x)."""
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return x * torch.sigmoid(x)
+RNNModule = BaseRNNModel

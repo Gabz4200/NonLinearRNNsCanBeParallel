@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import torch
-import torch.nn.functional as functional
+import torch.nn.functional as F
 from torch import nn
 
 from .base import BaseRNNModel, RMSNorm, RNNState, RNNStateList
@@ -93,9 +93,9 @@ class MinLSTMLayer(nn.Module):
         h_prev = state.hidden
         if h_prev.dim() == 2:
             h_prev = h_prev.view(x.shape[0], self.num_heads, self.head_dim)
-        diff = functional.softplus(-forget) - functional.softplus(-input_gate)
-        log_forget = -functional.softplus(diff)
-        log_input = -functional.softplus(-diff)
+        diff = F.softplus(-forget) - F.softplus(-input_gate)
+        log_forget = -F.softplus(diff)
+        log_input = -F.softplus(-diff)
         log_h0 = h_prev.unsqueeze(1).log()
         log_candidate = minimal_log_candidate(candidate)
         log_values = torch.cat([log_h0, log_input + log_candidate], dim=1)
@@ -151,7 +151,7 @@ class MinLSTM(BaseRNNModel):
             new_states_list.append(new_state)
             x = ff_layer(x)
 
-        return self.classifier(self.final_norm(x)), RNNStateList.from_list(new_states_list)
+        return self.classifier(self.final_norm(x)), RNNStateList(new_states_list)
 
     def step(
         self, x_t: torch.Tensor, state: RNNStateList | None = None
@@ -167,10 +167,10 @@ class MinLSTM(BaseRNNModel):
             new_states_list.append(new_state)
             x_t = ff_layer(x_t)
 
-        return self.classifier(self.final_norm(x_t)), RNNStateList.from_list(new_states_list)
+        return self.classifier(self.final_norm(x_t)), RNNStateList(new_states_list)
 
     def init_state(self, batch_size: int, device: torch.device) -> RNNStateList:
-        return RNNStateList.from_list(
+        return RNNStateList(
             [
                 RNNState(
                     hidden=torch.ones(

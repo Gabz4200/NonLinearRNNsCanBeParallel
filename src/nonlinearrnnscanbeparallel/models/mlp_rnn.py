@@ -7,12 +7,13 @@ and ReLU are the original form.  Architecture follows Definitions 3, 7, and 8.
 
 from __future__ import annotations
 
+import functools
 from collections.abc import Callable
 
 import torch
 from torch import nn
 
-from .base import BaseRNNModel, RMSNorm, RNNState, RNNStateList, SiLU
+from .base import BaseRNNModel, RMSNorm, RNNState, RNNStateList
 from .registry import register_model
 
 HeadFactory = Callable[[int], nn.Module]
@@ -42,7 +43,7 @@ class MLPHead(nn.Module):
             out_dim = head_dim * mlp_hidden_mult if i < num_layers - 1 else head_dim
             layers.append(nn.Linear(in_dim, out_dim, bias=False))
             if i < num_layers - 1:
-                layers.append(SiLU())
+                layers.append(nn.SiLU())
                 layers.append(nn.Dropout(dropout))
         self.net = nn.Sequential(*layers)
 
@@ -80,7 +81,8 @@ class MultiHeadRNNLayer(nn.Module):
         self.hidden_dim = hidden_dim
         self.num_heads = num_heads
         self.head_dim = hidden_dim // num_heads
-        assert hidden_dim % num_heads == 0, "hidden_dim must be divisible by num_heads"
+        if hidden_dim % num_heads != 0:
+            raise ValueError("hidden_dim must be divisible by num_heads")
 
         self.norm = RMSNorm(hidden_dim)
         self.heads = nn.ModuleList([head_factory(self.head_dim) for _ in range(num_heads)])
@@ -98,17 +100,14 @@ class MultiHeadRNNLayer(nn.Module):
         x_heads = x_norm.view(batch, self.num_heads, self.head_dim)
 
         head_outputs: list[torch.Tensor] = []
-        new_h: list[torch.Tensor] = []
         for h in range(self.num_heads):
-            head_out = self.heads[h](h_prev[:, h], x_heads[:, h])
-            head_outputs.append(head_out)
-            new_h.append(head_out.view(batch, 1, self.head_dim))
+            head_outputs.append(self.heads[h](h_prev[:, h], x_heads[:, h]))
 
         aggregated = self.output_proj(torch.cat(head_outputs, dim=-1))
         aggregated = self.dropout(aggregated)
 
         # Residual connection per Definition 7.
-        return x_t + aggregated, RNNState(hidden=torch.cat(new_h, dim=1))
+        return x_t + aggregated, RNNState(hidden=torch.stack(head_outputs, dim=1))
 
     def forward(self, x: torch.Tensor, state: RNNState) -> tuple[torch.Tensor, RNNState]:
         # Inputs carry [B, T, D]; states carry [B, H, D_head].
@@ -137,7 +136,7 @@ class FeedForwardSublayer(nn.Module):
         super().__init__()
         self.norm = RMSNorm(hidden_dim)
         self.up = nn.Linear(hidden_dim, hidden_dim * mlp_hidden_mult, bias=False)
-        self.act = SiLU()
+        self.act = nn.SiLU()
         self.drop = nn.Dropout(dropout)
         self.down = nn.Linear(hidden_dim * mlp_hidden_mult, hidden_dim, bias=False)
 
@@ -189,8 +188,11 @@ class MLPRNN(BaseRNNModel):
                         MultiHeadRNNLayer(
                             hidden_dim,
                             num_heads,
-                            head_factory=lambda h_dim: make_mlp_heads(
-                                h_dim, mlp_hidden_mult, mlp_num_layers, dropout
+                            head_factory=functools.partial(
+                                make_mlp_heads,
+                                mlp_hidden_mult=mlp_hidden_mult,
+                                num_layers=mlp_num_layers,
+                                dropout=dropout,
                             ),
                             dropout=dropout,
                         ),
@@ -220,7 +222,7 @@ class MLPRNN(BaseRNNModel):
 
         x = self.final_norm(x)
         logits = self.classifier(x)
-        return logits, RNNStateList.from_list(new_states_list)
+        return logits, RNNStateList(new_states_list)
 
     def step(
         self, x_t: torch.Tensor, state: RNNStateList | None = None
@@ -238,10 +240,10 @@ class MLPRNN(BaseRNNModel):
             new_states_list.append(new_state)
             x_t = ff_layer(x_t)
 
-        return self.classifier(self.final_norm(x_t)), RNNStateList.from_list(new_states_list)
+        return self.classifier(self.final_norm(x_t)), RNNStateList(new_states_list)
 
     def init_state(self, batch_size: int, device: torch.device) -> RNNStateList:
-        return RNNStateList.from_list(
+        return RNNStateList(
             [
                 RNNState(
                     hidden=torch.zeros(

@@ -7,7 +7,7 @@ It is separate from the target RNN and discarded at inference.
 from __future__ import annotations
 
 import torch
-import torch.nn.functional as functional
+import torch.nn.functional as F
 from torch import nn
 
 from .base import RMSNorm
@@ -123,8 +123,8 @@ class MinGRUScaffold(nn.Module):
 
         # Use log-space scan for numerical stability (matching minGRU implementation)
         # log_coeffs = log(1 - z), log_values = log(z * candidate) + log(h_prev)
-        log_update = -functional.softplus(-update)  # log(z)
-        log_one_minus_update = -functional.softplus(update)  # log(1 - z)
+        log_update = -F.softplus(-update)  # log(z)
+        log_one_minus_update = -F.softplus(update)  # log(1 - z)
         log_candidate = minimal_log_candidate(candidate)  # log(candidate)
 
         # Initial state is zeros -> approximate with large negative number
