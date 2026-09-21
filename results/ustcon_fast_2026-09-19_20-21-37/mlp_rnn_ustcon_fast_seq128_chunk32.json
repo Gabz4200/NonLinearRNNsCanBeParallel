@@ -1,0 +1,71 @@
+{
+  "model_name": "mlp_rnn",
+  "config": {
+    "seed": 42,
+    "task_type": "ustcon",
+    "num_samples": 200,
+    "min_nodes": 6,
+    "max_nodes": 10,
+    "edge_prob": 0.3,
+    "vocab_size": 32,
+    "seq_len": 128,
+    "batch_size": 32,
+    "num_workers": 0,
+    "hidden_dim": 64,
+    "num_layers": 1,
+    "num_heads": 2,
+    "dropout": 0.1,
+    "num_classes": 32,
+    "chunk_size": 32,
+    "scaffold_dim": 32,
+    "max_epochs": 3,
+    "accumulate_grad_batches": 1,
+    "lr": 0.005,
+    "weight_decay": 0.01,
+    "warmup_ratio": 0.1,
+    "min_lr_ratio": 0.01,
+    "target_grad_clip": 1.0,
+    "scaffold_grad_clip": 0.5,
+    "translator_grad_clip": 0.5,
+    "precision": "32-true",
+    "log_every_n_steps": 10,
+    "model_name": "mlp_rnn",
+    "target_type": "mlp"
+  },
+  "trainable_params": 94688,
+  "total_time_seconds": 7.450249671936035,
+  "epoch_times": [
+    2.0752956867218018,
+    2.3014581203460693,
+    2.112307071685791
+  ],
+  "train_losses": [
+    3.1119329929351807,
+    1.3453853130340576
+  ],
+  "val_losses": [
+    3.710512161254883,
+    1.6183640956878662,
+    0.8692388534545898,
+    0.7989716529846191
+  ],
+  "val_accuracies": [
+    0.0,
+    0.8999999761581421,
+    0.8999999761581421,
+    0.8999999761581421
+  ],
+  "val_reachability_accs": [
+    0.0,
+    0.8999999761581421,
+    0.8999999761581421,
+    0.8999999761581421
+  ],
+  "final_train_loss": 1.3453853130340576,
+  "final_val_loss": 0.7989716529846191,
+  "final_val_accuracy": 0.8999999761581421,
+  "final_reachability_acc": 0.8999999761581421,
+  "best_val_loss": 0.7989716529846191,
+  "best_val_accuracy": 0.8999999761581421,
+  "best_reachability_acc": 0.8999999761581421
+}

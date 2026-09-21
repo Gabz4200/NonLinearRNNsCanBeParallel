@@ -1,0 +1,388 @@
+{
+  "timestamp": "2026-09-20_11-31-37",
+  "base_config": {
+    "seed": 42,
+    "num_samples": 12,
+    "min_nodes": 4,
+    "max_nodes": 6,
+    "edge_prob": 0.2,
+    "vocab_size": 64,
+    "seq_len": 128,
+    "batch_size": 2,
+    "num_workers": 0,
+    "hidden_dim": 16,
+    "num_layers": 1,
+    "num_heads": 2,
+    "dropout": 0.0,
+    "num_classes": 64,
+    "chunk_size": 8,
+    "scaffold_dim": 8,
+    "max_epochs": 1,
+    "accumulate_grad_batches": 1,
+    "lr": 0.001,
+    "weight_decay": 0.01,
+    "warmup_ratio": 0.1,
+    "min_lr_ratio": 0.01,
+    "target_grad_clip": 1.0,
+    "scaffold_grad_clip": 0.5,
+    "translator_grad_clip": 0.5,
+    "precision": "32-true",
+    "log_every_n_steps": 10
+  },
+  "results": [
+    {
+      "model_name": "mlp_rnn",
+      "mode": "parallel",
+      "config": {
+        "seed": 42,
+        "num_samples": 12,
+        "min_nodes": 4,
+        "max_nodes": 6,
+        "edge_prob": 0.2,
+        "vocab_size": 64,
+        "seq_len": 128,
+        "batch_size": 2,
+        "num_workers": 0,
+        "hidden_dim": 16,
+        "num_layers": 1,
+        "num_heads": 2,
+        "dropout": 0.0,
+        "num_classes": 64,
+        "chunk_size": 8,
+        "scaffold_dim": 8,
+        "max_epochs": 1,
+        "accumulate_grad_batches": 1,
+        "lr": 0.001,
+        "weight_decay": 0.01,
+        "warmup_ratio": 0.1,
+        "min_lr_ratio": 0.01,
+        "target_grad_clip": 1.0,
+        "scaffold_grad_clip": 0.5,
+        "translator_grad_clip": 0.5,
+        "precision": "32-true",
+        "log_every_n_steps": 10,
+        "model_name": "mlp_rnn",
+        "target_type": "mlp"
+      },
+      "trainable_params": 7800,
+      "total_time_seconds": 0.23526954650878906,
+      "epoch_times": [
+        0.15103602409362793
+      ],
+      "train_losses": [
+        3.676370620727539
+      ],
+      "val_losses": [
+        2.9568018913269043
+      ],
+      "val_accuracies": [
+        0.0
+      ],
+      "val_reachability_accs": [
+        0.0
+      ],
+      "final_train_loss": 3.676370620727539,
+      "final_val_loss": 2.9568018913269043,
+      "final_val_accuracy": 0.0,
+      "final_reachability_acc": 0.0,
+      "best_val_loss": 2.9568018913269043,
+      "best_val_accuracy": 0.0,
+      "best_reachability_acc": 0.0
+    },
+    {
+      "model_name": "rkan_rnn",
+      "mode": "parallel",
+      "config": {
+        "seed": 42,
+        "num_samples": 12,
+        "min_nodes": 4,
+        "max_nodes": 6,
+        "edge_prob": 0.2,
+        "vocab_size": 64,
+        "seq_len": 128,
+        "batch_size": 2,
+        "num_workers": 0,
+        "hidden_dim": 16,
+        "num_layers": 1,
+        "num_heads": 2,
+        "dropout": 0.0,
+        "num_classes": 64,
+        "chunk_size": 8,
+        "scaffold_dim": 8,
+        "max_epochs": 1,
+        "accumulate_grad_batches": 1,
+        "lr": 0.001,
+        "weight_decay": 0.01,
+        "warmup_ratio": 0.1,
+        "min_lr_ratio": 0.01,
+        "target_grad_clip": 1.0,
+        "scaffold_grad_clip": 0.5,
+        "translator_grad_clip": 0.5,
+        "precision": "32-true",
+        "log_every_n_steps": 10,
+        "model_name": "rkan_rnn",
+        "target_type": "rkan"
+      },
+      "trainable_params": 3954,
+      "total_time_seconds": 0.5323212146759033,
+      "epoch_times": [
+        0.3847007751464844
+      ],
+      "train_losses": [
+        4.4119133949279785
+      ],
+      "val_losses": [
+        4.558568000793457
+      ],
+      "val_accuracies": [
+        0.0
+      ],
+      "val_reachability_accs": [
+        0.0
+      ],
+      "final_train_loss": 4.4119133949279785,
+      "final_val_loss": 4.558568000793457,
+      "final_val_accuracy": 0.0,
+      "final_reachability_acc": 0.0,
+      "best_val_loss": 4.558568000793457,
+      "best_val_accuracy": 0.0,
+      "best_reachability_acc": 0.0
+    },
+    {
+      "model_name": "m2rnn",
+      "mode": "parallel",
+      "config": {
+        "seed": 42,
+        "num_samples": 12,
+        "min_nodes": 4,
+        "max_nodes": 6,
+        "edge_prob": 0.2,
+        "vocab_size": 64,
+        "seq_len": 128,
+        "batch_size": 2,
+        "num_workers": 0,
+        "hidden_dim": 16,
+        "num_layers": 1,
+        "num_heads": 2,
+        "dropout": 0.0,
+        "num_classes": 64,
+        "chunk_size": 8,
+        "scaffold_dim": 8,
+        "max_epochs": 1,
+        "accumulate_grad_batches": 1,
+        "lr": 0.001,
+        "weight_decay": 0.01,
+        "warmup_ratio": 0.1,
+        "min_lr_ratio": 0.01,
+        "target_grad_clip": 1.0,
+        "scaffold_grad_clip": 0.5,
+        "translator_grad_clip": 0.5,
+        "precision": "32-true",
+        "log_every_n_steps": 10,
+        "model_name": "m2rnn",
+        "target_type": "m2rnn"
+      },
+      "trainable_params": 16856636,
+      "total_time_seconds": 2.0415196418762207,
+      "epoch_times": [
+        1.9735841751098633
+      ],
+      "train_losses": [
+        3.3171894550323486
+      ],
+      "val_losses": [
+        2.967045545578003
+      ],
+      "val_accuracies": [
+        1.0
+      ],
+      "val_reachability_accs": [
+        1.0
+      ],
+      "final_train_loss": 3.3171894550323486,
+      "final_val_loss": 2.967045545578003,
+      "final_val_accuracy": 1.0,
+      "final_reachability_acc": 1.0,
+      "best_val_loss": 2.967045545578003,
+      "best_val_accuracy": 1.0,
+      "best_reachability_acc": 1.0
+    },
+    {
+      "model_name": "mlp_rnn",
+      "mode": "bptt",
+      "config": {
+        "seed": 42,
+        "num_samples": 12,
+        "min_nodes": 4,
+        "max_nodes": 6,
+        "edge_prob": 0.2,
+        "vocab_size": 64,
+        "seq_len": 128,
+        "batch_size": 2,
+        "num_workers": 0,
+        "hidden_dim": 16,
+        "num_layers": 1,
+        "num_heads": 2,
+        "dropout": 0.0,
+        "num_classes": 64,
+        "chunk_size": 8,
+        "scaffold_dim": 8,
+        "max_epochs": 1,
+        "accumulate_grad_batches": 1,
+        "lr": 0.001,
+        "weight_decay": 0.01,
+        "warmup_ratio": 0.1,
+        "min_lr_ratio": 0.01,
+        "target_grad_clip": 1.0,
+        "scaffold_grad_clip": 0.5,
+        "translator_grad_clip": 0.5,
+        "precision": "32-true",
+        "log_every_n_steps": 10,
+        "model_name": "mlp_rnn",
+        "target_type": "mlp"
+      },
+      "trainable_params": 5952,
+      "total_time_seconds": 0.736602783203125,
+      "epoch_times": [
+        0.6783084869384766
+      ],
+      "train_losses": [
+        4.4244384765625
+      ],
+      "val_losses": [
+        4.199916839599609
+      ],
+      "val_accuracies": [
+        0.0
+      ],
+      "val_reachability_accs": [
+        0.0
+      ],
+      "final_train_loss": 4.4244384765625,
+      "final_val_loss": 4.199916839599609,
+      "final_val_accuracy": 0.0,
+      "final_reachability_acc": 0.0,
+      "best_val_loss": 4.199916839599609,
+      "best_val_accuracy": 0.0,
+      "best_reachability_acc": 0.0
+    },
+    {
+      "model_name": "rkan_rnn",
+      "mode": "bptt",
+      "config": {
+        "seed": 42,
+        "num_samples": 12,
+        "min_nodes": 4,
+        "max_nodes": 6,
+        "edge_prob": 0.2,
+        "vocab_size": 64,
+        "seq_len": 128,
+        "batch_size": 2,
+        "num_workers": 0,
+        "hidden_dim": 16,
+        "num_layers": 1,
+        "num_heads": 2,
+        "dropout": 0.0,
+        "num_classes": 64,
+        "chunk_size": 8,
+        "scaffold_dim": 8,
+        "max_epochs": 1,
+        "accumulate_grad_batches": 1,
+        "lr": 0.001,
+        "weight_decay": 0.01,
+        "warmup_ratio": 0.1,
+        "min_lr_ratio": 0.01,
+        "target_grad_clip": 1.0,
+        "scaffold_grad_clip": 0.5,
+        "translator_grad_clip": 0.5,
+        "precision": "32-true",
+        "log_every_n_steps": 10,
+        "model_name": "rkan_rnn",
+        "target_type": "rkan"
+      },
+      "trainable_params": 3228,
+      "total_time_seconds": 2.355428457260132,
+      "epoch_times": [
+        2.213247776031494
+      ],
+      "train_losses": [
+        3.7274858951568604
+      ],
+      "val_losses": [
+        3.6774673461914062
+      ],
+      "val_accuracies": [
+        0.0
+      ],
+      "val_reachability_accs": [
+        0.0
+      ],
+      "final_train_loss": 3.7274858951568604,
+      "final_val_loss": 3.6774673461914062,
+      "final_val_accuracy": 0.0,
+      "final_reachability_acc": 0.0,
+      "best_val_loss": 3.6774673461914062,
+      "best_val_accuracy": 0.0,
+      "best_reachability_acc": 0.0
+    },
+    {
+      "model_name": "m2rnn",
+      "mode": "bptt",
+      "config": {
+        "seed": 42,
+        "num_samples": 12,
+        "min_nodes": 4,
+        "max_nodes": 6,
+        "edge_prob": 0.2,
+        "vocab_size": 64,
+        "seq_len": 128,
+        "batch_size": 2,
+        "num_workers": 0,
+        "hidden_dim": 16,
+        "num_layers": 1,
+        "num_heads": 2,
+        "dropout": 0.0,
+        "num_classes": 64,
+        "chunk_size": 8,
+        "scaffold_dim": 8,
+        "max_epochs": 1,
+        "accumulate_grad_batches": 1,
+        "lr": 0.001,
+        "weight_decay": 0.01,
+        "warmup_ratio": 0.1,
+        "min_lr_ratio": 0.01,
+        "target_grad_clip": 1.0,
+        "scaffold_grad_clip": 0.5,
+        "translator_grad_clip": 0.5,
+        "precision": "32-true",
+        "log_every_n_steps": 10,
+        "model_name": "m2rnn",
+        "target_type": "m2rnn"
+      },
+      "trainable_params": 11540,
+      "total_time_seconds": 1.041109561920166,
+      "epoch_times": [
+        0.9816234111785889
+      ],
+      "train_losses": [
+        3.6671905517578125
+      ],
+      "val_losses": [
+        3.126983165740967
+      ],
+      "val_accuracies": [
+        0.0
+      ],
+      "val_reachability_accs": [
+        0.0
+      ],
+      "final_train_loss": 3.6671905517578125,
+      "final_val_loss": 3.126983165740967,
+      "final_val_accuracy": 0.0,
+      "final_reachability_acc": 0.0,
+      "best_val_loss": 3.126983165740967,
+      "best_val_accuracy": 0.0,
+      "best_reachability_acc": 0.0
+    }
+  ]
+}
