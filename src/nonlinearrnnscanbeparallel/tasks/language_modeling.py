@@ -31,10 +31,17 @@ class LMLightningTask(pl.LightningModule):
         super().__init__()
         self.save_hyperparameters(ignore=["backbone"])
         self.backbone = backbone
-        if hasattr(backbone, "wte"):
-            self.input_embed = None
-        else:
-            self.input_embed = nn.Embedding(model_spec["vocab_size"], model_spec["hidden_dim"])
+        # Tokens feed straight through when the backbone (or the RNN it
+        # wraps) owns an embedding; only legacy RNNs get ``input_embed``.
+        wrapped = getattr(backbone, "target", None)
+        owns_embedding = hasattr(backbone, "wte") or (
+            wrapped is not None and hasattr(wrapped, "wte")
+        )
+        self.input_embed = (
+            None
+            if owns_embedding
+            else nn.Embedding(model_spec["vocab_size"], model_spec["hidden_dim"])
+        )
         self.criterion = causal_lm_loss
         self._max_seq_len = int(
             model_spec.get(

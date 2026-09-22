@@ -258,6 +258,14 @@ def _run_one(
     trainer_cfg["callbacks"] = node_dict(cfg.get("callbacks", {}))
     trainer_cfg["fast_dev_run"] = bool(cfg.get("fast_dev_run", False))
 
+    ref_len = data_cfg.get("max_seq_len", data_cfg.get("block_size", data_cfg.get("seq_len")))
+    chunk_size = int(parallel_cfg.get("chunk_size", 0))
+    if ref_len is not None and chunk_size >= int(ref_len):
+        print(
+            f"WARNING: parallel.chunk_size ({chunk_size}) >= data length ({ref_len}): "
+            "single-chunk fallback, scaffold/translator skipped; set chunk_size smaller"
+        )
+
     datamodule = _build_datamodule(task_name, data_cfg)
     datamodule.setup("fit")
     total_steps = max(
