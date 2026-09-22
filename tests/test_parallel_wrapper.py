@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import cast
 
+import pytest
 import torch
 
 from nonlinearrnnscanbeparallel.models.parallel_wrapper import ParallelRNNTrainer
@@ -224,6 +225,89 @@ def test_parallel_wrapper_different_chunk_sizes() -> None:
         x = torch.randn(1, seq_len, 16)
         logits = wrapper(x)
         assert logits.shape == (1, seq_len, 2)
+
+
+def test_when_single_chunk_then_scaffold_skipped_and_warns(monkeypatch: pytest.MonkeyPatch) -> None:
+    """chunk_size >= T warns and runs the target sequentially without the scaffold."""
+    target = get_model(
+        "mlp_rnn",
+        input_dim=16,
+        hidden_dim=16,
+        num_layers=1,
+        num_heads=2,
+        dropout=0.0,
+        num_classes=2,
+    )
+    wrapper = ParallelRNNTrainer(target, chunk_size=8, scaffold_dim=8)
+    wrapper.train()
+
+    def _boom(x: torch.Tensor) -> torch.Tensor:
+        raise AssertionError("scaffold must not run on a single chunk")
+
+    monkeypatch.setattr(wrapper.scaffolds[0], "forward", _boom)
+
+    x = torch.randn(1, 8, 16)
+    with pytest.warns(UserWarning, match="single-chunk"):
+        logits = wrapper(x)
+    assert logits.shape == (1, 8, 2)
+
+
+def test_when_parallel_then_first_chunk_starts_zeroed() -> None:
+    """Chunk 0 is not conditioned on scaffold/translator (zeroed start); later chunks are."""
+    target = get_model(
+        "mlp_rnn",
+        input_dim=16,
+        hidden_dim=16,
+        num_layers=1,
+        num_heads=2,
+        dropout=0.0,
+        num_classes=2,
+    )
+    wrapper = ParallelRNNTrainer(target, chunk_size=4, scaffold_dim=8, dropout=0.0)
+    wrapper.train()
+    x = torch.randn(2, 12, 16)  # 3 chunks of 4
+
+    baseline = wrapper(x)
+
+    def _constant_boundaries(z: torch.Tensor) -> torch.Tensor:
+        return torch.full((z.shape[0], z.shape[1], 16), 42.0)
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(wrapper.translators[0], "forward", _constant_boundaries)
+    try:
+        constant = wrapper(x)
+    finally:
+        monkeypatch.undo()
+
+    # Chunk 0 runs from the zeroed state, so it must not see the boundary path.
+    torch.testing.assert_close(constant[:, :4, :], baseline[:, :4, :])
+    # Later chunks start from translated boundaries, so they must differ.
+    assert not torch.allclose(constant[:, 4:, :], baseline[:, 4:, :], atol=1e-6)
+
+
+def test_when_parallel_then_boundaries_causal_over_full_prefix() -> None:
+    """Scanner state at t depends only on inputs [0..t] and early inputs reach far chunks."""
+    target = get_model(
+        "mlp_rnn",
+        input_dim=16,
+        hidden_dim=16,
+        num_layers=1,
+        num_heads=2,
+        dropout=0.0,
+        num_classes=2,
+    )
+    wrapper = ParallelRNNTrainer(target, chunk_size=4, scaffold_dim=8, dropout=0.0)
+    scaffold = wrapper.scaffolds[0]
+    x = torch.randn(1, 12, 16)
+    base = scaffold(x)
+
+    late = x.clone()
+    late[:, 8:] += 1.0  # perturb inside the last chunk only
+    assert torch.allclose(scaffold(late)[:, :8], base[:, :8], atol=1e-5)
+
+    early = x.clone()
+    early[:, 0] += 3.0 * torch.sign(torch.randn(1, 16))  # non-uniform perturb of the first token
+    assert (scaffold(early)[:, 7] - base[:, 7]).abs().max() > 1e-5
 
 
 def test_parallel_wrapper_target_types() -> None:

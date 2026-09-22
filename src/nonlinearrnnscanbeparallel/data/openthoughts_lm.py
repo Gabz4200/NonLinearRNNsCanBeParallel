@@ -40,7 +40,7 @@ class OpenThoughtsLMConfig:
     val_split: float = 0.02
     test_split: float = 0.02
     batch_size: int = 8
-    num_workers: int = 4
+    num_workers: int = 0
     streaming: bool = True
     trust_remote_code: bool = False
     num_proc: int = 4
@@ -151,6 +151,8 @@ class OpenThoughtsLMDataModule(pl.LightningDataModule):
         return islice(ds, cfg.subset_num_samples)
 
     def setup(self, stage: str | None = None) -> None:
+        if self.train_dataset is not None:
+            return
         cfg = self.config
         slice_iter = self._load_slice()
         from numpy.random import default_rng

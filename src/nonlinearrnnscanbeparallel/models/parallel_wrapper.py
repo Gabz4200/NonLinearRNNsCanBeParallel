@@ -12,6 +12,7 @@ The wrapper exposes hidden states so custom output heads and losses can be attac
 from __future__ import annotations
 
 import math
+import warnings
 from collections.abc import Callable
 from typing import cast
 
@@ -302,6 +303,16 @@ class ParallelRNNTrainer(nn.Module):
 
         B, T, _ = x.shape
         num_chunks = (T + self.chunk_size - 1) // self.chunk_size
+        # Scanner state at index t has consumed input t, so chunk m starts
+        # from the state before its first token (index m*chunk_size - 1).
+        boundary_indices = [m * self.chunk_size - 1 for m in range(1, num_chunks)]
+        if not boundary_indices:
+            warnings.warn(
+                f"chunk_size ({self.chunk_size}) >= seq_len ({T}): single-chunk "
+                "fallback, scaffold/translator skipped; set chunk_size < T",
+                UserWarning,
+                stacklevel=2,
+            )
 
         # Project input to hidden_dim
         x = self.input_proj(x)
@@ -314,15 +325,14 @@ class ParallelRNNTrainer(nn.Module):
             # Get the RNN and FF sublayers for this layer
             rnn_layer, ff_layer = self._get_layer_pair(layer_idx)
 
-            scaffold_states = self.scaffolds[layer_idx](layer_input)  # [B, T, scaffold_dim]
-
-            boundary_indices = [m * self.chunk_size for m in range(1, num_chunks)]
             if not boundary_indices:
-                # Single chunk - run layer sequentially
+                # Single chunk - run layer sequentially (scaffold/translator skipped)
                 layer_input, current_state = self._run_layer_sequential(
                     layer_idx, layer_input, current_state
                 )
                 continue
+
+            scaffold_states = self.scaffolds[layer_idx](layer_input)  # [B, T, scaffold_dim]
 
             boundary_scaffold = scaffold_states[:, boundary_indices, :]  # [B, M-1, scaffold_dim]
 
@@ -721,7 +731,9 @@ class ParallelRNNTrainer(nn.Module):
         x = self.input_proj(x)
         B, T, _ = x.shape
         num_chunks = (T + self.chunk_size - 1) // self.chunk_size
-        boundary_indices = [m * self.chunk_size for m in range(1, num_chunks)]
+        # Aligned with forward: chunk m starts from the scanner state before
+        # its first token.
+        boundary_indices = [m * self.chunk_size - 1 for m in range(1, num_chunks)]
 
         if not boundary_indices:
             return [
