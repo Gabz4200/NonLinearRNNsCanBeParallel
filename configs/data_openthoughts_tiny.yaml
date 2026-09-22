@@ -1,0 +1,15 @@
+data:
+  task: "openthoughts_lm"
+  dataset_name: "open-thoughts/OpenThoughts-114k"
+  dataset_split: "train"
+  subset_num_samples: 512
+  subset_seed: 42
+  tokenizer_name: "gpt2"
+  max_seq_len: 256
+  block_size: 256
+  val_split: 0.02
+  test_split: 0.02
+  batch_size: 4
+  num_workers: 0
+  streaming: true
+  trust_remote_code: false
