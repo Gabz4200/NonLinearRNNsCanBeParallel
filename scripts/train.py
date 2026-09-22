@@ -402,14 +402,18 @@ def main(cfg: DictConfig) -> None:
         if "error" in result:
             print(f"{result['model']:10s} [{result['mode']}]: FAILED - {result['error']}")
             continue
-        metrics = result["metrics"]
+        metrics = result.get("metrics", {})
+        printed = [
+            f"{key}={value:.4f}"
+            for key, value in metrics.items()
+            if isinstance(value, float) and key.startswith(("train/", "val/"))
+        ]
         row = f"{result['model']:10s} [{result['mode']}]: "
-        for key in ("val/loss", "val/accuracy", "val/reachability_acc", "train/loss_epoch"):
-            if key in metrics:
-                row += f"{key}={metrics[key]:.4f} "
-            else:
-                row += f"{key}=n/a "
-        print(f"{row}time={result['time_seconds']:.1f}s")
+        if printed:
+            row += " ".join(printed)
+        else:
+            row += "no metrics"
+        print(f"{row}  time={result['time_seconds']:.1f}s")
     print(f"\nFull summary saved to: {results_dir / 'summary.json'}")
 
 
