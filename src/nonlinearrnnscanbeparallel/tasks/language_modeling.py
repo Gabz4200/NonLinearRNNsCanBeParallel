@@ -37,10 +37,11 @@ class LMLightningTask(pl.LightningModule):
         owns_embedding = hasattr(backbone, "wte") or (
             wrapped is not None and hasattr(wrapped, "wte")
         )
+        embed_dim = model_spec.get("hidden_dim")
+        if embed_dim is None:
+            embed_dim = model_spec.get("head_dim", 0) * model_spec.get("num_heads", 0)
         self.input_embed = (
-            None
-            if owns_embedding
-            else nn.Embedding(model_spec["vocab_size"], model_spec["hidden_dim"])
+            None if owns_embedding else nn.Embedding(model_spec["vocab_size"], embed_dim)
         )
         self.criterion = causal_lm_loss
         self._max_seq_len = int(

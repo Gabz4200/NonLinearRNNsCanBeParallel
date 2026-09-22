@@ -155,8 +155,9 @@ class NanoRNN(BaseRNNModel):
     def __init__(
         self,
         input_dim: int,
-        hidden_dim: int,
-        num_layers: int,
+        hidden_dim: int | None = None,
+        head_dim: int | None = None,
+        num_layers: int = 1,
         num_heads: int = 12,
         dropout: float = 0.0,
         vocab_size: int = 50257,
@@ -178,6 +179,13 @@ class NanoRNN(BaseRNNModel):
         rkan_num_basis: int = 4,
         **kwargs: object,
     ) -> None:
+        if head_dim is not None:
+            derived_hidden = head_dim * num_heads
+            if hidden_dim is not None and hidden_dim != derived_hidden:
+                raise ValueError("hidden_dim must equal head_dim * num_heads")
+            hidden_dim = derived_hidden
+        if hidden_dim is None:
+            raise ValueError("specify either hidden_dim or head_dim")
         super().__init__(input_dim, hidden_dim, num_layers, num_heads, dropout)
         if mixer_type not in MIXER_TYPES:
             raise ValueError(f"Unknown mixer_type: {mixer_type}")
@@ -260,6 +268,19 @@ class NanoRNN(BaseRNNModel):
             down = getattr(ff, "down", None)
             if isinstance(down, nn.Linear):
                 nn.init.normal_(down.weight, mean=0.0, std=0.02 * scale)
+            # Stacked head params are not nn submodules, so init their Linear
+            # weights via the meta skeleton's structure (GPT-2 N(0, 0.02)).
+            heads = getattr(mixer, "heads", None)
+            if heads:
+                for name, module in heads[0].named_modules():
+                    if not isinstance(module, nn.Linear):
+                        continue
+                    weight_key = f"{name}.weight".replace(".", "/")
+                    if weight_key in mixer.params:
+                        nn.init.normal_(mixer.params[weight_key], mean=0.0, std=0.02)
+                    bias_key = f"{name}.bias".replace(".", "/")
+                    if module.bias is not None and bias_key in mixer.params:
+                        nn.init.zeros_(mixer.params[bias_key])
 
     def resize_vocab(self, new_vocab_size: int) -> None:
         """Resize tied embedding/lm_head, preserving overlapping rows."""

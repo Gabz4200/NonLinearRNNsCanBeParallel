@@ -12,6 +12,7 @@ from collections.abc import Callable
 
 import torch
 from torch import nn
+from torch.func import functional_call, stack_module_state
 
 from .base import RMSNorm, RNNState, RNNStateList, SequentialRNNModel
 from .registry import register_model
@@ -68,6 +69,11 @@ class MultiHeadRNNLayer(nn.Module):
     The recurrent head function f(h_{t-1}, x_t) is constructed per-head by
     ``head_factory``.  MLP-RNN uses MLPHead by default; RKANRNN injects an
     RKANHead with the same surrounding structure.
+
+    All heads share the head type but hold unique weights.  Weights live in
+    one stacked ``ParameterDict`` (per ``stack_module_state``); heads execute
+    in parallel per token via ``torch.vmap`` + ``functional_call`` against the
+    lightweight meta skeleton in ``self.heads``.
     """
 
     def __init__(
@@ -84,10 +90,35 @@ class MultiHeadRNNLayer(nn.Module):
         if hidden_dim % num_heads != 0:
             raise ValueError("hidden_dim must be divisible by num_heads")
 
+        modules = [head_factory(self.head_dim) for _ in range(num_heads)]
+        params, buffers = stack_module_state(modules)
+        # torch forbids "." in param/buffer names, so store headlines and map
+        # back to the dotted state_dict keys functional_call expects.
+        self.params = nn.ParameterDict()
+        self._param_names: dict[str, str] = {}
+        for name, tensor in params.items():
+            self.params[name.replace(".", "/")] = nn.Parameter(tensor)
+            self._param_names[name.replace(".", "/")] = name
+        self._buffer_names: dict[str, str] = {}
+        for name, value in buffers.items():
+            self.register_buffer(name.replace(".", "/"), value, persistent=True)
+            self._buffer_names[name.replace(".", "/")] = name
+        # Meta skeletons keep per-head type/channel info without duplicating
+        # weights: functional_call always overrides params/buffers.
+        self.heads = [m.to(device="meta") for m in modules]
+
         self.norm = RMSNorm(hidden_dim)
-        self.heads = nn.ModuleList([head_factory(self.head_dim) for _ in range(num_heads)])
         self.output_proj = nn.Linear(hidden_dim, hidden_dim, bias=False)
         self.dropout = nn.Dropout(dropout)
+
+    def _recur(
+        self,
+        params: dict[str, torch.Tensor],
+        buffers: dict[str, torch.Tensor],
+        h_prev: torch.Tensor,
+        x_t: torch.Tensor,
+    ) -> torch.Tensor:
+        return functional_call(self.heads[0], (params, buffers), args=(h_prev, x_t))
 
     def step(self, x_t: torch.Tensor, state: RNNState) -> tuple[torch.Tensor, RNNState]:
         """Single-token update: x_t [B, D] with state.hidden [B, H, D_head]."""
@@ -99,15 +130,20 @@ class MultiHeadRNNLayer(nn.Module):
         x_norm = self.norm(x_t)
         x_heads = x_norm.view(batch, self.num_heads, self.head_dim)
 
-        head_outputs: list[torch.Tensor] = []
-        for h in range(self.num_heads):
-            head_outputs.append(self.heads[h](h_prev[:, h], x_heads[:, h]))
+        params = {self._param_names[k]: v for k, v in self.params.items()}
+        named_buffers = dict(self.named_buffers(recurse=False))
+        buffers = {self._buffer_names[k]: v for k, v in named_buffers.items()}
+        # Heads are the vmap batch dim: [B, H, D_head] -> [H, B, D_head].
+        head_outputs = torch.vmap(self._recur, randomness="different")(
+            params, buffers, h_prev.permute(1, 0, 2), x_heads.permute(1, 0, 2)
+        )  # [H, B, D_head]
+        heads = head_outputs.permute(1, 0, 2)  # [B, H, D_head]
 
-        aggregated = self.output_proj(torch.cat(head_outputs, dim=-1))
+        aggregated = self.output_proj(heads.reshape(batch, self.hidden_dim))
         aggregated = self.dropout(aggregated)
 
         # Residual connection per Definition 7.
-        return x_t + aggregated, RNNState(hidden=torch.stack(head_outputs, dim=1))
+        return x_t + aggregated, RNNState(hidden=heads)
 
     def forward(self, x: torch.Tensor, state: RNNState) -> tuple[torch.Tensor, RNNState]:
         # Inputs carry [B, T, D]; states carry [B, H, D_head].

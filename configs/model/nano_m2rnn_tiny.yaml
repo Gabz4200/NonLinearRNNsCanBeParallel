@@ -1,7 +1,7 @@
 name: "nano_rnn"
 mixer_type: "m2rnn"
 vocab_size: 50257
-hidden_dim: 768
+head_dim: 192
 num_layers: 18
 num_heads: 4
 mlp_hidden_mult: 4
