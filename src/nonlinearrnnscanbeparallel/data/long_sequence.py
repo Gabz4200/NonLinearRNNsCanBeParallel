@@ -287,12 +287,6 @@ class LongSequenceLMDataModule(pl.LightningDataModule):
 
     @staticmethod
     def _collate_fn(samples: list) -> dict[str, torch.Tensor]:
-        # Use the collate_fn from the dataset
-        if hasattr(samples[0], "__class__"):
-            # Find the appropriate collate_fn
-            for cls in type(samples[0]).__mro__:
-                if hasattr(cls, "collate_fn") and callable(cls.collate_fn):
-                    return cls.collate_fn(samples)
         return {
             "input_ids": torch.stack([s.input_ids for s in samples]),
             "labels": torch.stack([s.labels for s in samples]),

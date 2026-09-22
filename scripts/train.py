@@ -43,10 +43,12 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import hydra
 import lightning as pl
 import torch
+from _util import TRAINING_KEYS, node_dict
 from lightning.pytorch.callbacks import Callback
 from omegaconf import DictConfig, OmegaConf
 
@@ -68,33 +70,13 @@ from nonlinearrnnscanbeparallel.modules.lightning_module import RNNTask
 from nonlinearrnnscanbeparallel.tasks.graph_reachability import (
     BPTTGraphReachabilityTask,
     GradientClippingCallback,
+    GraphReachabilityTask,
     MetricsCallback,
-    ParallelGraphReachabilityTask,
 )
-from nonlinearrnnscanbeparallel.tasks.language_modeling import BPTTLMTask, ParallelLMTask
+from nonlinearrnnscanbeparallel.tasks.language_modeling import BPTTLMTask, LMLightningTask
 from nonlinearrnnscanbeparallel.training.engine import create_trainer
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-
-# Training-only model keys forwarded to the Lightning task, not to get_model().
-_TRAINING_KEYS = {
-    "lr",
-    "weight_decay",
-    "warmup_ratio",
-    "min_lr_ratio",
-    "total_steps",
-    "target_grad_clip",
-    "scaffold_grad_clip",
-    "translator_grad_clip",
-    "bptt_max_seq_len",
-}
-
-
-def _dict(node: Any) -> dict[str, Any]:
-    out = OmegaConf.to_container(node, resolve=True)
-    assert isinstance(out, dict)
-    return cast(dict[str, Any], dict(out))
-
 
 _CELL_TYPE = {
     "mlp_rnn": "mlp",
@@ -214,7 +196,7 @@ def _build_task(
         if mode == "parallel":
             backbone = _parallel_backbone(64, 128)
             return (
-                ParallelGraphReachabilityTask(spec, backbone),
+                GraphReachabilityTask(spec, backbone),
                 _clip_callback(backbone),
                 0.0,
             )
@@ -228,7 +210,7 @@ def _build_task(
         if mode == "parallel":
             backbone = _parallel_backbone(1024, 256)
             return (
-                ParallelLMTask(spec, backbone),
+                LMLightningTask(spec, backbone),
                 _clip_callback(backbone),
                 0.0,
             )
@@ -269,11 +251,11 @@ def _run_one(
     cfg: DictConfig,
     results_dir: Path,
 ) -> tuple[dict[str, Any], dict[str, list[float]]]:
-    data_cfg = _dict(cfg.get("data", {}))
-    model_cfg = _dict(cfg.get("model", {}))
-    parallel_cfg = _dict(cfg.get("parallel", {}))
-    trainer_cfg = _dict(cfg.get("trainer", {}))
-    trainer_cfg["callbacks"] = _dict(cfg.get("callbacks", {}))
+    data_cfg = node_dict(cfg.get("data", {}))
+    model_cfg = node_dict(cfg.get("model", {}))
+    parallel_cfg = node_dict(cfg.get("parallel", {}))
+    trainer_cfg = node_dict(cfg.get("trainer", {}))
+    trainer_cfg["callbacks"] = node_dict(cfg.get("callbacks", {}))
     trainer_cfg["fast_dev_run"] = bool(cfg.get("fast_dev_run", False))
 
     datamodule = _build_datamodule(task_name, data_cfg)
@@ -287,7 +269,7 @@ def _run_one(
         * int(trainer_cfg.get("max_epochs", 10)),
     )
 
-    model_kwargs = {k: v for k, v in model_cfg.items() if k not in ("name", *_TRAINING_KEYS)}
+    model_kwargs = {k: v for k, v in model_cfg.items() if k not in ("name", *TRAINING_KEYS)}
     model_kwargs.setdefault("input_dim", int(model_cfg.get("hidden_dim", 256)))
     target = get_model(model_name, **model_kwargs)
     if isinstance(target, NanoRNN) and hasattr(datamodule, "tokenizer_vocab_size"):

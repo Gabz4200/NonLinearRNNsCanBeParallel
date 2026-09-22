@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 import torch
 
+from nonlinearrnnscanbeparallel.models.minimal import minimal_candidate
 from nonlinearrnnscanbeparallel.models.scaffold import MinGRUScaffold
 
 
@@ -99,12 +100,11 @@ def test_scaffold_zero_initial_state() -> None:
 
 def test_scaffold_candidate_activation() -> None:
     """Candidate uses the minimal activation (x>=0: x+0.5, else: sigmoid)."""
-    scaffold = MinGRUScaffold(input_dim=32, hidden_dim=16, num_heads=2)
     # Test the activation function directly
     pos = torch.tensor([2.0])
     neg = torch.tensor([-2.0])
-    pos_out = scaffold.candidate_activation(pos)
-    neg_out = scaffold.candidate_activation(neg)
+    pos_out = minimal_candidate(pos)
+    neg_out = minimal_candidate(neg)
     assert pos_out.item() == pytest.approx(2.5)
     assert neg_out.item() == pytest.approx(torch.sigmoid(neg).item())
 

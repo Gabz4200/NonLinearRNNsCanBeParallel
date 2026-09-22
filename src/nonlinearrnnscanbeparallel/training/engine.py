@@ -7,8 +7,6 @@ from typing import Any
 import lightning
 from lightning.pytorch.callbacks import Callback, EarlyStopping, ModelCheckpoint
 
-from nonlinearrnnscanbeparallel.callbacks.taichi_init import TaichiInitCallback
-
 
 def _model_checkpoint() -> ModelCheckpoint:
     return ModelCheckpoint(
@@ -26,7 +24,6 @@ def _early_stopping() -> EarlyStopping:
 CALLBACKS = {
     "model_checkpoint": _model_checkpoint,
     "early_stopping": _early_stopping,
-    "taichi_init": TaichiInitCallback,
 }
 
 

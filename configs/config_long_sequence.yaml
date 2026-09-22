@@ -2,12 +2,10 @@ defaults:
   - model_long
   - data_long
   - trainer_long
-  - runtime
   - parallel
   - _self_
 
 task: long_sequence
-mode: parallel
 
 # Models in the run: mlp_rnn | rkan_rnn | m2rnn | min_gru | min_lstm
 models:

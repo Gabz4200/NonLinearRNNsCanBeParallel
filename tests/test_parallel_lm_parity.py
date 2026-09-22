@@ -7,7 +7,7 @@ import torch
 import nonlinearrnnscanbeparallel.models  # noqa: F401
 from nonlinearrnnscanbeparallel.models.parallel_wrapper import ParallelRNNTrainer
 from nonlinearrnnscanbeparallel.models.registry import get_model
-from nonlinearrnnscanbeparallel.tasks.language_modeling import BPTTLMTask, ParallelLMTask
+from nonlinearrnnscanbeparallel.tasks.language_modeling import BPTTLMTask, LMLightningTask
 
 
 def _nano() -> torch.nn.Module:
@@ -53,7 +53,7 @@ def test_when_bptt_and_parallel_training_step_then_finite_loss() -> None:
     assert torch.isfinite(bptt_loss)
 
     wrapper = ParallelRNNTrainer(_nano(), chunk_size=4, scaffold_dim=16)
-    parallel = ParallelLMTask(spec, wrapper)
+    parallel = LMLightningTask(spec, wrapper)
     parallel.train()
     parallel_loss = parallel.training_step(_batch(), 0)
     assert torch.isfinite(parallel_loss)
@@ -63,7 +63,7 @@ def test_when_lm_tasks_log_then_same_metric_keys() -> None:
     spec = {"vocab_size": 64, "hidden_dim": 32, "bptt_max_seq_len": 12, "total_steps": 10}
     bptt = BPTTLMTask(spec, _nano())
     wrapper = ParallelRNNTrainer(_nano(), chunk_size=4, scaffold_dim=16)
-    parallel = ParallelLMTask(spec, wrapper)
+    parallel = LMLightningTask(spec, wrapper)
 
     keys: dict[str, set[str]] = {}
     for name, task in (("bptt", bptt), ("parallel", parallel)):

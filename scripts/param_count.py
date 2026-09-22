@@ -9,37 +9,20 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import Any, cast
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import hydra
 import torch
-from omegaconf import DictConfig, OmegaConf
+from _util import TRAINING_KEYS, node_dict
+from omegaconf import DictConfig
 
 from nonlinearrnnscanbeparallel.models.parallel_wrapper import ParallelRNNTrainer
 from nonlinearrnnscanbeparallel.models.registry import get_model
 
-_TRAINING_KEYS = {
-    "lr",
-    "weight_decay",
-    "warmup_ratio",
-    "min_lr_ratio",
-    "total_steps",
-    "target_grad_clip",
-    "scaffold_grad_clip",
-    "translator_grad_clip",
-    "bptt_max_seq_len",
-}
-
 _MIN_TARGET = 124_000_000
 _MAX_TARGET = 350_000_000
-
-
-def _dict(node: Any) -> dict[str, Any]:
-    out = OmegaConf.to_container(node, resolve=True)
-    assert isinstance(out, dict)
-    return cast(dict[str, Any], dict(out))
 
 
 def _count(module: torch.nn.Module) -> int:
@@ -48,11 +31,11 @@ def _count(module: torch.nn.Module) -> int:
 
 @hydra.main(version_base=None, config_path="../configs", config_name="config_lm")
 def main(cfg: DictConfig) -> None:
-    model_cfg = _dict(cfg.get("model", {}))
-    parallel_cfg = _dict(cfg.get("parallel", {}))
+    model_cfg = node_dict(cfg.get("model", {}))
+    parallel_cfg = node_dict(cfg.get("parallel", {}))
     name = model_cfg.get("name", "nano_rnn")
 
-    model_kwargs = {k: v for k, v in model_cfg.items() if k not in ("name", *_TRAINING_KEYS)}
+    model_kwargs = {k: v for k, v in model_cfg.items() if k not in ("name", *TRAINING_KEYS)}
     model_kwargs.setdefault("input_dim", int(model_cfg.get("hidden_dim", 768)))
     target = get_model(name, **model_kwargs)
 

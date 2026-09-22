@@ -2,12 +2,10 @@ defaults:
   - model_ustcon
   - data_ustcon
   - trainer
-  - runtime
   - parallel
   - _self_
 
 task: ustcon
-mode: parallel
 
 # Models in the comparison: mlp_rnn | rkan_rnn | m2rnn | min_gru | min_lstm
 models:

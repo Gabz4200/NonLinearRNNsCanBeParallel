@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import torch
 import torch.nn.functional as F
+from torch import nn
 
 
 def minimal_candidate(x: torch.Tensor) -> torch.Tensor:
@@ -31,34 +32,8 @@ def parallel_scan_log(log_coeffs: torch.Tensor, log_values: torch.Tensor) -> tor
     return torch.exp(a_star + log_h0_plus_b_star)[:, 1:]
 
 
-def segmented_parallel_scan_log(
-    log_coeffs: torch.Tensor,
-    log_values: torch.Tensor,
-    segment_ids: torch.Tensor,
-) -> torch.Tensor:
-    """Segmented parallel prefix scan for variable-length sequences.
-
-    Args:
-        log_coeffs: [B, T, ...] log coefficients
-        log_values: [B, T+1, ...] log values (including initial)
-        segment_ids: [B, T] integer segment IDs, same segment = same sequence
-
-    Returns:
-        Output states [B, T, ...]
-    """
-    batch, seq_len = log_coeffs.shape[:2]
-
-    # At segment boundaries, we need to reset the scan
-    # segment_ids[b, t] != segment_ids[b, t-1] means new sequence
-    # For t=0, it's always a boundary
-    is_boundary = torch.zeros_like(segment_ids, dtype=torch.bool)
-    is_boundary[:, 0] = True
-    if seq_len > 1:
-        is_boundary[:, 1:] = segment_ids[:, 1:] != segment_ids[:, :-1]
-
-    # At segment boundaries the scan resets: h_t = exp(log_values_t).
-    # Setting log_coeffs = -inf at boundaries achieves this with the standard scan.
-    neg_inf = torch.full_like(log_coeffs, -1e30)
-    log_coeffs_mod = torch.where(is_boundary.unsqueeze(-1), neg_inf, log_coeffs)
-
-    return parallel_scan_log(log_coeffs_mod, log_values)
+def per_head_linear(linears: nn.ModuleList, x_heads: torch.Tensor, stack_dim: int) -> torch.Tensor:
+    """Apply each head's linear to ``x_heads[..., head, :]`` and stack results back."""
+    return torch.stack(
+        [linear(x_heads[..., head, :]) for head, linear in enumerate(linears)], dim=stack_dim
+    )

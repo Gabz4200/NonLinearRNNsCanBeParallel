@@ -6,8 +6,8 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-from .base import BaseRNNModel, RMSNorm, RNNState, RNNStateList
-from .minimal import minimal_candidate, minimal_log_candidate, parallel_scan_log
+from .base import RMSNorm, RNNState, RNNStateList, SequentialRNNModel
+from .minimal import minimal_candidate, minimal_log_candidate, parallel_scan_log, per_head_linear
 from .mlp_rnn import FeedForwardSublayer
 from .registry import register_model
 
@@ -39,18 +39,9 @@ class MinLSTMLayer(nn.Module):
     def _project(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         batch, sequence_len = x.shape[:2]
         x_heads = x.reshape(batch, sequence_len, self.num_heads, self.head_dim)
-        forget = torch.stack(
-            [linear(x_heads[:, :, head]) for head, linear in enumerate(self.linear_f)],
-            dim=2,
-        )
-        input_gate = torch.stack(
-            [linear(x_heads[:, :, head]) for head, linear in enumerate(self.linear_i)],
-            dim=2,
-        )
-        candidate = torch.stack(
-            [linear(x_heads[:, :, head]) for head, linear in enumerate(self.linear_h)],
-            dim=2,
-        )
+        forget = per_head_linear(self.linear_f, x_heads, stack_dim=2)
+        input_gate = per_head_linear(self.linear_i, x_heads, stack_dim=2)
+        candidate = per_head_linear(self.linear_h, x_heads, stack_dim=2)
         return forget, input_gate, candidate
 
     def step(self, x_t: torch.Tensor, state: RNNState) -> tuple[torch.Tensor, RNNState]:
@@ -62,21 +53,9 @@ class MinLSTMLayer(nn.Module):
 
         x_norm = self.norm(x_t)
         x_heads = x_norm.view(batch, self.num_heads, self.head_dim)
-        forget = torch.stack(
-            [torch.sigmoid(linear(x_heads[:, head])) for head, linear in enumerate(self.linear_f)],
-            dim=1,
-        )
-        input_gate = torch.stack(
-            [torch.sigmoid(linear(x_heads[:, head])) for head, linear in enumerate(self.linear_i)],
-            dim=1,
-        )
-        candidate = torch.stack(
-            [
-                minimal_candidate(linear(x_heads[:, head]))
-                for head, linear in enumerate(self.linear_h)
-            ],
-            dim=1,
-        )
+        forget = torch.sigmoid(per_head_linear(self.linear_f, x_heads, stack_dim=1))
+        input_gate = torch.sigmoid(per_head_linear(self.linear_i, x_heads, stack_dim=1))
+        candidate = minimal_candidate(per_head_linear(self.linear_h, x_heads, stack_dim=1))
         gate_sum = forget + input_gate
         forget_prime = forget / gate_sum
         input_prime = input_gate / gate_sum
@@ -107,7 +86,7 @@ class MinLSTMLayer(nn.Module):
 
 
 @register_model("min_lstm")
-class MinLSTM(BaseRNNModel):
+class MinLSTM(SequentialRNNModel):
     """Minimal LSTM with parallel log-space training and sequential decoding."""
 
     def __init__(
@@ -136,38 +115,6 @@ class MinLSTM(BaseRNNModel):
         )
         self.final_norm = RMSNorm(hidden_dim)
         self.classifier = nn.Linear(hidden_dim, num_classes, bias=False)
-
-    def forward(
-        self, x: torch.Tensor, state: RNNStateList | None = None
-    ) -> tuple[torch.Tensor, RNNStateList]:
-        x = self.emb_norm(x)
-        if state is None:
-            state = self.init_state(x.shape[0], x.device)
-
-        new_states_list: list[RNNState] = []
-        for index, layer_pair in enumerate(self.layers):
-            rnn_layer, ff_layer = layer_pair
-            x, new_state = rnn_layer(x, state[index])
-            new_states_list.append(new_state)
-            x = ff_layer(x)
-
-        return self.classifier(self.final_norm(x)), RNNStateList(new_states_list)
-
-    def step(
-        self, x_t: torch.Tensor, state: RNNStateList | None = None
-    ) -> tuple[torch.Tensor, RNNStateList]:
-        x_t = self.emb_norm(x_t)
-        if state is None:
-            state = self.init_state(x_t.shape[0], x_t.device)
-
-        new_states_list: list[RNNState] = []
-        for index, layer_pair in enumerate(self.layers):
-            rnn_layer, ff_layer = layer_pair
-            x_t, new_state = rnn_layer.step(x_t, state[index])
-            new_states_list.append(new_state)
-            x_t = ff_layer(x_t)
-
-        return self.classifier(self.final_norm(x_t)), RNNStateList(new_states_list)
 
     def init_state(self, batch_size: int, device: torch.device) -> RNNStateList:
         return RNNStateList(

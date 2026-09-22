@@ -8,7 +8,7 @@ import pytest
 import torch
 
 from nonlinearrnnscanbeparallel.logging.metrics import perplexity, token_accuracy
-from nonlinearrnnscanbeparallel.losses.language_modeling import CausalLMLoss, causal_lm_loss
+from nonlinearrnnscanbeparallel.losses.language_modeling import causal_lm_loss
 
 
 def test_when_shift_applied_then_matches_manual_cross_entropy() -> None:
@@ -38,14 +38,6 @@ def test_when_all_targets_masked_then_nan() -> None:
     labels = torch.full((1, 3), -100)
     loss = causal_lm_loss(logits, labels)
     assert math.isnan(loss.item())
-
-
-def test_when_loss_module_used_then_matches_function() -> None:
-    torch.manual_seed(1)
-    logits = torch.randn(1, 4, 6)
-    labels = torch.randint(0, 6, (1, 4))
-    module = CausalLMLoss()
-    torch.testing.assert_close(module(logits, labels), causal_lm_loss(logits, labels))
 
 
 def test_when_perplexity_computed_then_exp_of_loss() -> None:

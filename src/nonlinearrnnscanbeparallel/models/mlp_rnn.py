@@ -13,7 +13,7 @@ from collections.abc import Callable
 import torch
 from torch import nn
 
-from .base import BaseRNNModel, RMSNorm, RNNState, RNNStateList
+from .base import RMSNorm, RNNState, RNNStateList, SequentialRNNModel
 from .registry import register_model
 
 HeadFactory = Callable[[int], nn.Module]
@@ -151,7 +151,7 @@ class FeedForwardSublayer(nn.Module):
 
 
 @register_model("mlp_rnn")
-class MLPRNN(BaseRNNModel):
+class MLPRNN(SequentialRNNModel):
     """Multilayer MLP-RNN per arXiv:2603.03612 (Definitions 3, 7, 8).
 
     Architecture (paper Def 7 / Def 8):
@@ -203,44 +203,6 @@ class MLPRNN(BaseRNNModel):
 
         self.final_norm = RMSNorm(hidden_dim)
         self.classifier = nn.Linear(hidden_dim, num_classes, bias=False)
-
-    def forward(
-        self, x: torch.Tensor, state: RNNStateList | None = None
-    ) -> tuple[torch.Tensor, RNNStateList]:
-        batch = x.shape[0]
-        x = self.emb_norm(x)
-
-        if state is None:
-            state = self.init_state(batch, x.device)
-
-        new_states_list: list[RNNState] = []
-        for rnn_layer_idx, layer_pair in enumerate(self.layers):
-            rnn_layer, ff_layer = layer_pair
-            x, new_state = rnn_layer(x, state[rnn_layer_idx])
-            new_states_list.append(new_state)
-            x = ff_layer(x)
-
-        x = self.final_norm(x)
-        logits = self.classifier(x)
-        return logits, RNNStateList(new_states_list)
-
-    def step(
-        self, x_t: torch.Tensor, state: RNNStateList | None = None
-    ) -> tuple[torch.Tensor, RNNStateList]:
-        """Single-token decoding: x_t [B, D] -> logits [B, C] plus updated states."""
-        x_t = self.emb_norm(x_t)
-
-        if state is None:
-            state = self.init_state(x_t.shape[0], x_t.device)
-
-        new_states_list: list[RNNState] = []
-        for rnn_layer_idx, layer_pair in enumerate(self.layers):
-            rnn_layer, ff_layer = layer_pair
-            x_t, new_state = rnn_layer.step(x_t, state[rnn_layer_idx])
-            new_states_list.append(new_state)
-            x_t = ff_layer(x_t)
-
-        return self.classifier(self.final_norm(x_t)), RNNStateList(new_states_list)
 
     def init_state(self, batch_size: int, device: torch.device) -> RNNStateList:
         return RNNStateList(

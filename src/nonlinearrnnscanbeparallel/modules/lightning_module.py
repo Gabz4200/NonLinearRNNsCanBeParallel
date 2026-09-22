@@ -13,7 +13,7 @@ import lightning
 import torch
 from torch import nn
 
-from ..models.base import RNNModule, RNNState, RNNStateList
+from ..models.base import RNNModule, RNNStateList, chunked_forward_bptt
 from ..models.registry import get_model
 
 
@@ -53,23 +53,7 @@ class RNNTask(lightning.LightningModule):
     def _forward_chunked(
         self, input_ids: torch.Tensor, state: RNNStateList | None = None
     ) -> tuple[torch.Tensor, RNNStateList | None]:
-        _, t = input_ids.shape
-        chunk = self.bptt_max_seq_len
-        if chunk <= 0 or t <= chunk:
-            return self.forward(input_ids, state)
-        outputs: list[torch.Tensor] = []
-        for start in range(0, t, chunk):
-            end = min(start + chunk, t)
-            chunk_ids = input_ids[:, start:end]
-            logits_chunk, state = self.forward(chunk_ids, state)
-            outputs.append(logits_chunk)
-            if state is not None and end < t:
-                # Detach hidden states but preserve extra (conv_cache, etc.)
-                detached_states = [
-                    RNNState(hidden=s.hidden.detach(), extra=s.extra) for s in state.states
-                ]
-                state = RNNStateList(detached_states)
-        return torch.cat(outputs, dim=1), state
+        return chunked_forward_bptt(self.forward, input_ids, state, self.bptt_max_seq_len)
 
     def forward(
         self, x: torch.Tensor, state: RNNStateList | None = None

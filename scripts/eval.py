@@ -2,22 +2,16 @@
 
 import sys
 from pathlib import Path
-from typing import Any, cast
 
 import hydra
 from omegaconf import DictConfig, OmegaConf
 
-
-def _container(node: Any) -> dict[str, Any]:
-    out = OmegaConf.to_container(node, resolve=True)
-    assert isinstance(out, dict)
-    return cast(dict[str, Any], dict(out))
-
+sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
+sys.path.insert(0, str(Path(__file__).parent))
 
 # Ensure src imports work when run as a script.
-sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
-
 import lightning  # noqa: E402
+from _util import node_dict  # noqa: E402
 
 import nonlinearrnnscanbeparallel.models  # noqa: F401, E402 - populates registry (side effect)
 from nonlinearrnnscanbeparallel.data.datamodule import GraphConnectivityDataModule  # noqa: E402
@@ -32,10 +26,10 @@ def main(cfg: DictConfig) -> None:
 
     print("Registered models:", list_models())
 
-    data_module = GraphConnectivityDataModule(_container(cfg.get("data", {})))
+    data_module = GraphConnectivityDataModule(node_dict(cfg.get("data", {})))
     data_module.setup("fit")  # creates train/val/test split
 
-    task = RNNTask(_container(cfg.get("model", {})))
+    task = RNNTask(node_dict(cfg.get("model", {})))
 
     trainer = lightning.Trainer(
         accelerator=cfg.trainer.get("accelerator", "auto"),
