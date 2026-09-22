@@ -117,6 +117,9 @@ multirun/
 /val_loss_comparison.png
 /training_results.json
 
+# Generated run dirs under results (tracked benchmark fixtures stay tracked)
+results/*/
+
 # OS
 .DS_Store
 Thumbs.db
