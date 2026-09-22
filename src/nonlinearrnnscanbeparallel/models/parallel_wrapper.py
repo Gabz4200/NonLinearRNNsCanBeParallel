@@ -378,18 +378,6 @@ class ParallelRNNTrainer(nn.Module):
             return hidden_states, hidden_states
         return hidden_states
 
-    def get_logits(self, hidden_states: torch.Tensor) -> torch.Tensor:
-        """Apply output head to hidden states to get logits.
-
-        Useful for custom training loops where you already have hidden states.
-        """
-        if self.output_head is None:
-            raise ValueError(
-                "No output_head configured. Set output_head in __init__ "
-                "or call forward with return_hidden=True."
-            )
-        return self.output_head(hidden_states)
-
     def training_step(
         self,
         x: torch.Tensor,
@@ -754,49 +742,6 @@ class ParallelRNNTrainer(nn.Module):
             # In practice, you'd run the full forward to get accurate boundary states
 
         return boundary_states_per_layer
-
-    def compute_boundary_error(
-        self,
-        x: torch.Tensor,
-        true_states: list[torch.Tensor],
-    ) -> torch.Tensor:
-        """Compute boundary reconstruction error ε_m = ||h_true - h_tilde|| / ||h_true||.
-
-        Args:
-            x: Input [B, T, D]
-            true_states: List of true hidden states [B, T, D] per layer (from sequential run)
-
-        Returns:
-            Mean boundary error across layers and boundaries
-        """
-        x = self.input_proj(x)
-        B, T, _ = x.shape
-        num_chunks = (T + self.chunk_size - 1) // self.chunk_size
-        boundary_indices = [m * self.chunk_size for m in range(1, num_chunks)]
-
-        if not boundary_indices:
-            return torch.tensor(0.0, device=x.device)
-
-        errors = []
-        layer_input = x
-
-        for layer_idx in range(self.num_layers):
-            scaffold_states = self.scaffolds[layer_idx](layer_input)
-            boundary_scaffold = scaffold_states[:, boundary_indices, :]
-            predicted_boundaries = self.translators[layer_idx](boundary_scaffold)  # [B, M-1, D]
-
-            # Get true boundary states
-            true_boundaries = true_states[layer_idx][:, boundary_indices, :]  # [B, M-1, D]
-
-            # Compute relative error
-            diff = predicted_boundaries - true_boundaries
-            error = diff.norm(dim=-1) / (true_boundaries.norm(dim=-1) + 1e-8)
-            errors.append(error.mean())
-
-            # For next layer inspection, we'd need actual layer output
-            # This is approximate since we don't run the layer
-
-        return torch.stack(errors).mean()
 
     def step(self, x_t: torch.Tensor, state: RNNStateList | None = None):
         """Inference step: runs target RNN sequentially (no scaffold/translator)."""

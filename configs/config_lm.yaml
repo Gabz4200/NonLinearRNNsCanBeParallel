@@ -2,7 +2,6 @@ defaults:
   - model: nano_min_gru_tiny
   - data_openthoughts
   - trainer_lm
-  - runtime
   - parallel
   - _self_
 

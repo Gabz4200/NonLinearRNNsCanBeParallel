@@ -28,7 +28,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .base import BaseRNNModel, RMSNorm, RNNState, RNNStateList
+from .base import RMSNorm, RNNState, RNNStateList, SequentialRNNModel
 from .mlp_rnn import FeedForwardSublayer
 from .registry import register_model
 
@@ -267,7 +267,7 @@ class M2RNNLayer(nn.Module):
 
 
 @register_model("m2rnn")
-class M2RNN(BaseRNNModel):
+class M2RNN(SequentialRNNModel):
     """Matrix-to-Matrix RNN per arXiv:2603.14360.
 
     Architecture (paper §3.1.2, Fig. 2):
@@ -319,43 +319,6 @@ class M2RNN(BaseRNNModel):
 
         self.final_norm = RMSNorm(hidden_dim)
         self.classifier = nn.Linear(hidden_dim, num_classes, bias=False)
-
-    def forward(
-        self, x: torch.Tensor, state: RNNStateList | None = None
-    ) -> tuple[torch.Tensor, RNNStateList]:
-        x = self.emb_norm(x)
-
-        if state is None:
-            state = self.init_state(x.shape[0], x.device)
-
-        new_states_list: list[RNNState] = []
-        for i, layer_pair in enumerate(self.layers):
-            rnn_layer, ff_layer = layer_pair
-            x, new_state = rnn_layer(x, state[i])
-            new_states_list.append(new_state)
-            x = ff_layer(x)
-
-        x = self.final_norm(x)
-        logits = self.classifier(x)
-        return logits, RNNStateList(new_states_list)
-
-    def step(
-        self, x_t: torch.Tensor, state: RNNStateList | None = None
-    ) -> tuple[torch.Tensor, RNNStateList]:
-        """Single-token decoding: x_t [B, D] -> logits [B, C] plus updated states."""
-        x_t = self.emb_norm(x_t)
-
-        if state is None:
-            state = self.init_state(x_t.shape[0], x_t.device)
-
-        new_states_list: list[RNNState] = []
-        for i, layer_pair in enumerate(self.layers):
-            rnn_layer, ff_layer = layer_pair
-            x_t, new_state = rnn_layer.step(x_t, state[i])
-            new_states_list.append(new_state)
-            x_t = ff_layer(x_t)
-
-        return self.classifier(self.final_norm(x_t)), RNNStateList(new_states_list)
 
     def init_state(self, batch_size: int, device: torch.device) -> RNNStateList:
         # conv_cache shape: [B, proj_dim, kernel_size-1]

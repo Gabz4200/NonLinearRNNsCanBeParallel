@@ -11,12 +11,7 @@ import torch.nn.functional as F
 from torch import nn
 
 from .base import RMSNorm
-from .minimal import (
-    minimal_candidate,
-    minimal_log_candidate,
-    parallel_scan_log,
-    segmented_parallel_scan_log,
-)
+from .minimal import minimal_candidate, minimal_log_candidate, parallel_scan_log, per_head_linear
 
 
 class ScaffoldBase(nn.Module):
@@ -27,7 +22,7 @@ class ScaffoldBase(nn.Module):
     only depends on this forward signature.
     """
 
-    def forward(self, x: torch.Tensor, seq_lens: torch.Tensor | None = None) -> torch.Tensor:
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         raise NotImplementedError
 
 
@@ -65,10 +60,6 @@ class MinGRUScaffold(ScaffoldBase):
         self.output_proj = nn.Linear(hidden_dim, hidden_dim, bias=False)
         self.dropout = nn.Dropout(dropout)
 
-    def candidate_activation(self, x: torch.Tensor) -> torch.Tensor:
-        """Minimal candidate activation: x >= 0 -> x + 0.5, else sigmoid(x)."""
-        return torch.where(x >= 0, x + 0.5, torch.sigmoid(x))
-
     def _project(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """Project input to update gate and candidate per head.
 
@@ -80,14 +71,8 @@ class MinGRUScaffold(ScaffoldBase):
             x = x.unsqueeze(1)
         batch, sequence_len = x.shape[:2]
         x_heads = x.reshape(batch, sequence_len, self.num_heads, self.head_dim)
-        update = torch.stack(
-            [linear(x_heads[:, :, head]) for head, linear in enumerate(self.linear_z)],
-            dim=2,
-        )
-        candidate = torch.stack(
-            [linear(x_heads[:, :, head]) for head, linear in enumerate(self.linear_h)],
-            dim=2,
-        )
+        update = per_head_linear(self.linear_z, x_heads, stack_dim=2)
+        candidate = per_head_linear(self.linear_h, x_heads, stack_dim=2)
         return update, candidate
 
     def step(self, x_t: torch.Tensor, h_prev: torch.Tensor) -> torch.Tensor:
@@ -108,27 +93,16 @@ class MinGRUScaffold(ScaffoldBase):
         x_proj = self.input_proj(x_norm)
         x_heads = x_proj.view(batch, self.num_heads, self.head_dim)
 
-        update = torch.stack(
-            [torch.sigmoid(linear(x_heads[:, head])) for head, linear in enumerate(self.linear_z)],
-            dim=1,
-        )
-        candidate = torch.stack(
-            [
-                self.candidate_activation(linear(x_heads[:, head]))
-                for head, linear in enumerate(self.linear_h)
-            ],
-            dim=1,
-        )
+        update = torch.sigmoid(per_head_linear(self.linear_z, x_heads, stack_dim=1))
+        candidate = minimal_candidate(per_head_linear(self.linear_h, x_heads, stack_dim=1))
         h_t = (1.0 - update) * h_prev + update * candidate
         return h_t
 
-    def forward(self, x: torch.Tensor, seq_lens: torch.Tensor | None = None) -> torch.Tensor:
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Parallel forward pass using associative prefix scan.
 
         Args:
             x: Input tensor [B, T, D]
-            seq_lens: Optional tensor of sequence lengths [B]. If provided,
-                the scan is reset at each sequence boundary.
 
         Returns:
             States for all timesteps [B, T, D]
@@ -156,23 +130,7 @@ class MinGRUScaffold(ScaffoldBase):
         # log_values = [log_h0, log(z_1) + log(candidate_1), ..., log(z_T) + log(candidate_T)]
         log_values = torch.cat([log_h0, log_update + log_candidate], dim=1)
 
-        # Handle variable-length sequences: reset at sequence boundaries
-        if seq_lens is not None:
-            # Create segment IDs from sequence lengths
-            # segment_ids[b, t] = 0 for t < seq_lens[b], 1 for t >= seq_lens[b] (padding)
-            # But we also need to handle multiple sequences per batch if packed
-            # For simplicity, assume each batch item is one sequence with length seq_lens[b]
-            # and padding after that
-            B, T = x.shape[:2]
-            device = x.device
-            t_idx = torch.arange(T, device=device).view(1, T).expand(B, T)
-            # segment_id = 0 for valid positions, 1 for padding
-            segment_ids = (t_idx >= seq_lens.view(-1, 1)).long()
-            # Run segmented scan
-            h_t = segmented_parallel_scan_log(log_coeffs, log_values, segment_ids)
-        else:
-            # Run standard parallel scan
-            h_t = parallel_scan_log(log_coeffs, log_values)
+        h_t = parallel_scan_log(log_coeffs, log_values)
 
         # Project to output dimension
         output = self.output_proj(h_t.reshape(x.shape[0], x.shape[1], self.hidden_dim))
@@ -225,18 +183,9 @@ class MinLSTMScaffold(ScaffoldBase):
             x = x.unsqueeze(1)
         batch, sequence_len = x.shape[:2]
         x_heads = x.reshape(batch, sequence_len, self.num_heads, self.head_dim)
-        forget = torch.stack(
-            [linear(x_heads[:, :, head]) for head, linear in enumerate(self.linear_f)],
-            dim=2,
-        )
-        input_gate = torch.stack(
-            [linear(x_heads[:, :, head]) for head, linear in enumerate(self.linear_i)],
-            dim=2,
-        )
-        candidate = torch.stack(
-            [linear(x_heads[:, :, head]) for head, linear in enumerate(self.linear_h)],
-            dim=2,
-        )
+        forget = per_head_linear(self.linear_f, x_heads, stack_dim=2)
+        input_gate = per_head_linear(self.linear_i, x_heads, stack_dim=2)
+        candidate = per_head_linear(self.linear_h, x_heads, stack_dim=2)
         return forget, input_gate, candidate
 
     def step(self, x_t: torch.Tensor, h_prev: torch.Tensor) -> torch.Tensor:
@@ -248,26 +197,14 @@ class MinLSTMScaffold(ScaffoldBase):
         x_proj = self.input_proj(x_norm)
         x_heads = x_proj.view(batch, self.num_heads, self.head_dim)
 
-        forget = torch.stack(
-            [torch.sigmoid(linear(x_heads[:, head])) for head, linear in enumerate(self.linear_f)],
-            dim=1,
-        )
-        input_gate = torch.stack(
-            [torch.sigmoid(linear(x_heads[:, head])) for head, linear in enumerate(self.linear_i)],
-            dim=1,
-        )
-        candidate = torch.stack(
-            [
-                minimal_candidate(linear(x_heads[:, head]))
-                for head, linear in enumerate(self.linear_h)
-            ],
-            dim=1,
-        )
+        forget = torch.sigmoid(per_head_linear(self.linear_f, x_heads, stack_dim=1))
+        input_gate = torch.sigmoid(per_head_linear(self.linear_i, x_heads, stack_dim=1))
+        candidate = minimal_candidate(per_head_linear(self.linear_h, x_heads, stack_dim=1))
         gate_sum = forget + input_gate
         h_t = (forget / gate_sum) * h_prev + (input_gate / gate_sum) * candidate
         return h_t
 
-    def forward(self, x: torch.Tensor, seq_lens: torch.Tensor | None = None) -> torch.Tensor:
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         input_dtype = x.dtype
         x_norm = self.norm(x)
         x_proj = self.input_proj(x_norm)
@@ -286,14 +223,7 @@ class MinLSTMScaffold(ScaffoldBase):
         log_coeffs = log_forget
         log_values = torch.cat([log_h0, log_input + log_candidate], dim=1)
 
-        if seq_lens is not None:
-            batch, seq = x.shape[:2]
-            device = x.device
-            t_idx = torch.arange(seq, device=device).view(1, seq).expand(batch, seq)
-            segment_ids = (t_idx >= seq_lens.view(-1, 1)).long()
-            h_t = segmented_parallel_scan_log(log_coeffs, log_values, segment_ids)
-        else:
-            h_t = parallel_scan_log(log_coeffs, log_values)
+        h_t = parallel_scan_log(log_coeffs, log_values)
 
         output = self.output_proj(h_t.reshape(x.shape[0], x.shape[1], self.hidden_dim))
         output = self.dropout(output)
@@ -332,7 +262,7 @@ class ScaffoldStack(ScaffoldBase):
             in_dim = hidden_dim
         self.layers = nn.ModuleList(layers)
 
-    def forward(self, x: torch.Tensor, seq_lens: torch.Tensor | None = None) -> torch.Tensor:
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         for layer in self.layers:
-            x = layer(x, seq_lens)
+            x = layer(x)
         return x

@@ -18,7 +18,7 @@ from torch import nn
 
 from ..data.graph_reachability import ANSWER_MARKER
 from ..losses.classification import cross_entropy_loss
-from ..models.base import RNNState, RNNStateList
+from ..models.base import RNNStateList, chunked_forward_bptt
 from ..models.parallel_wrapper import get_cosine_schedule_with_warmup
 
 
@@ -92,30 +92,7 @@ class GraphReachabilityTask(pl.LightningModule):
         self, input_ids: torch.Tensor, state: RNNStateList | None = None
     ) -> tuple[torch.Tensor, RNNStateList | None]:
         """Chunked BPTT with state detach between chunks for MLP-RNN stability."""
-        _, sequence_len = input_ids.shape
-        chunk = self._max_seq_len
-        if chunk <= 0 or sequence_len <= chunk:
-            return self.forward(input_ids, state)
-
-        outputs: list[torch.Tensor] = []
-        for start in range(0, sequence_len, chunk):
-            end = min(start + chunk, sequence_len)
-            logits, state = self.forward(input_ids[:, start:end], state)
-            outputs.append(logits)
-            if state is not None and end < sequence_len:
-                detached = [
-                    RNNState(
-                        hidden=item.hidden.detach(),
-                        extra=(
-                            {k: v.detach() for k, v in item.extra.items()}
-                            if item.extra is not None
-                            else None
-                        ),
-                    )
-                    for item in state.states
-                ]
-                state = RNNStateList(detached)
-        return torch.cat(outputs, dim=1), state
+        return chunked_forward_bptt(self.forward, input_ids, state, self._max_seq_len)
 
     def _forward(
         self, input_ids: torch.Tensor, state: RNNStateList | None = None
@@ -192,13 +169,6 @@ class GraphReachabilityTask(pl.LightningModule):
             "optimizer": optimizer,
             "lr_scheduler": {"scheduler": scheduler, "interval": "step"},
         }
-
-
-class ParallelGraphReachabilityTask(GraphReachabilityTask):
-    """Parallel chunkwise training forward dispatch."""
-
-    def _forward(self, input_ids: torch.Tensor, state=None):
-        return self.forward(input_ids, state)
 
 
 class BPTTGraphReachabilityTask(GraphReachabilityTask):

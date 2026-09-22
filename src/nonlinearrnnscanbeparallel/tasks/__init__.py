@@ -9,7 +9,7 @@ from .graph_reachability import (
     GraphReachabilityTask,
     MetricsCallback,
 )
-from .language_modeling import BPTTLMTask, LMLightningTask, ParallelLMTask
+from .language_modeling import BPTTLMTask, LMLightningTask
 
 __all__ = [
     "BPTTLMTask",
@@ -17,5 +17,4 @@ __all__ = [
     "GraphReachabilityTask",
     "LMLightningTask",
     "MetricsCallback",
-    "ParallelLMTask",
 ]

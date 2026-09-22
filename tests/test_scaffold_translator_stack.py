@@ -10,11 +10,7 @@ from nonlinearrnnscanbeparallel.models.scaffold import (
     MinLSTMScaffold,
     ScaffoldStack,
 )
-from nonlinearrnnscanbeparallel.models.translator import (
-    Translator,
-    TranslatorLayer,
-    TranslatorStack,
-)
+from nonlinearrnnscanbeparallel.models.translator import TranslatorLayer, TranslatorStack
 
 
 def test_when_scaffold_stack_depth_one_then_shape_matches_legacy() -> None:
@@ -59,9 +55,9 @@ def test_when_scaffold_stack_invalid_type_then_raises() -> None:
         ScaffoldStack(scaffold_type="gru", input_dim=16, hidden_dim=8)
 
 
-def test_when_translator_stack_depth_one_then_matches_legacy_mlp() -> None:
+def test_when_translator_stack_depth_one_then_matches_single_layer_mlp() -> None:
     stack = TranslatorStack(input_dim=12, hidden_dim=16, translator_type="mlp", num_layers=1)
-    legacy = Translator(input_dim=12, hidden_dim=16, target_type="mlp")
+    legacy = TranslatorLayer(input_dim=12, hidden_dim=16, translator_type="mlp")
     stack.eval()
     legacy.eval()
     stack.layers[0].load_state_dict(legacy.state_dict())

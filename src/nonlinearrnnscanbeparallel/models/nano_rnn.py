@@ -30,7 +30,6 @@ norm-first + residual-bearing sublayer, as in nanoGPT/nanoRWKV.
 from __future__ import annotations
 
 import functools
-from dataclasses import dataclass
 from typing import Any
 
 import torch
@@ -45,32 +44,6 @@ from .registry import register_model
 from .rkan import RationalFeedForward, RKANHead
 
 MIXER_TYPES = ("mlp", "rkan", "min_gru", "min_lstm", "m2rnn")
-
-
-@dataclass
-class NanoRNNConfig:
-    """Configuration for :class:`NanoRNN`."""
-
-    vocab_size: int = 50257
-    hidden_dim: int = 768
-    num_layers: int = 12
-    num_heads: int = 12
-    mixer_type: str = "min_gru"
-    mlp_hidden_mult: int = 4
-    ff_type: str = "mlp"
-    dropout: float = 0.0
-    tie_embeddings: bool = True
-    use_pos_emb: bool = False
-    max_seq_len: int = 1024
-    key_dim: int = DEFAULT_KEY_DIM
-    value_dim: int = DEFAULT_VALUE_DIM
-    rkan_degree: int = 3
-    rkan_alpha: float = 1.0
-    rkan_beta: float = 1.0
-    rkan_iota: float = 1.0
-    rkan_mapping: str = "algebraic_infinite"
-    rkan_type: str = "jacobi"
-    rkan_num_basis: int = 4
 
 
 def _build_mlp_mixer(

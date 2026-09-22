@@ -189,61 +189,6 @@ _LEGACY_TARGET_TO_TRANSLATOR = {
 }
 
 
-class Translator(TranslatorLayer):
-    """Backward-compatible translator bound to a target model type.
-
-    ``target_type`` (mlp | rkan | min_gru | min_lstm | m2rnn) selects the
-    legacy architecture: rkan target -> rkan translator, m2rnn target ->
-    matrix output shape, everything else -> mlp translator. Prefer
-    :class:`TranslatorLayer` with explicit ``translator_type`` /
-    ``output_shape`` for new code.
-    """
-
-    def __init__(
-        self,
-        input_dim: int,
-        hidden_dim: int,
-        target_type: str = "mlp",
-        translator_type: str | None = None,
-        output_shape: str | None = None,
-        dropout: float = 0.1,
-        rkan_degree: int = 3,
-        rkan_alpha: float = 1.0,
-        rkan_beta: float = 1.0,
-        rkan_iota: float = 1.0,
-        rkan_mapping: str = "algebraic_infinite",
-        rkan_type: str = "jacobi",
-        rkan_num_basis: int = 4,
-        use_gdn2_init: bool = True,
-        num_heads: int = 4,
-        key_dim: int = 16,
-        value_dim: int = 16,
-    ) -> None:
-        if target_type not in ("mlp", "rkan", "min_gru", "min_lstm", "m2rnn"):
-            raise ValueError(f"Unknown target_type: {target_type}")
-        resolved_translator = translator_type or _LEGACY_TARGET_TO_TRANSLATOR[target_type]
-        resolved_shape = output_shape or ("matrix" if target_type == "m2rnn" else "vector")
-        super().__init__(
-            input_dim,
-            hidden_dim,
-            translator_type=resolved_translator,
-            output_shape=resolved_shape,
-            dropout=dropout,
-            rkan_degree=rkan_degree,
-            rkan_alpha=rkan_alpha,
-            rkan_beta=rkan_beta,
-            rkan_iota=rkan_iota,
-            rkan_mapping=rkan_mapping,
-            rkan_type=rkan_type,
-            rkan_num_basis=rkan_num_basis,
-            use_gdn2_init=use_gdn2_init,
-            num_heads=num_heads,
-            key_dim=key_dim,
-            value_dim=value_dim,
-        )
-        self.target_type = target_type
-
-
 class TranslatorStack(nn.Module):
     """Stack of 1..N translator layers applied per outer RNN layer.
 

@@ -2007,12 +2007,6 @@ notebooks = [
     { name = "jupytext" },
     { name = "nbconvert" },
 ]
-taichi = [
-    { name = "taichi" },
-]
-transformers = [
-    { name = "transformers" },
-]
 
 [package.metadata]
 requires-dist = [
@@ -2032,14 +2026,12 @@ requires-dist = [
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=5.0.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.6.0" },
     { name = "safetensors", specifier = ">=0.4.0" },
-    { name = "taichi", marker = "extra == 'taichi'", specifier = ">=1.7.0" },
     { name = "tokenizers", specifier = ">=0.19.0" },
     { name = "torch", marker = "extra == 'cpu'", specifier = ">=2.6.0,<2.7.0", index = "https://download.pytorch.org/whl/cpu", conflict = { package = "nonlinearrnnscanbeparallel", extra = "cpu" } },
     { name = "torch", marker = "extra == 'cu124'", specifier = ">=2.6.0,<2.7.0", index = "https://download.pytorch.org/whl/cu124", conflict = { package = "nonlinearrnnscanbeparallel", extra = "cu124" } },
     { name = "transformers", specifier = ">=4.45.0" },
-    { name = "transformers", marker = "extra == 'transformers'", specifier = ">=4.45.0" },
 ]
-provides-extras = ["cpu", "cu124", "taichi", "transformers", "dev", "notebooks"]
+provides-extras = ["cpu", "cu124", "dev", "notebooks"]
 
 [[package]]
 name = "notebook"
@@ -2229,7 +2221,7 @@ name = "nvidia-cudnn-cu12"
 version = "9.1.0.70"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "nvidia-cublas-cu12", marker = "(sys_platform != 'emscripten' and sys_platform != 'win32' and extra != 'extra-26-nonlinearrnnscanbeparallel-cpu') or (sys_platform == 'emscripten' and extra == 'extra-26-nonlinearrnnscanbeparallel-cu124') or (sys_platform == 'win32' and extra == 'extra-26-nonlinearrnnscanbeparallel-cu124') or (extra == 'extra-26-nonlinearrnnscanbeparallel-cpu' and extra == 'extra-26-nonlinearrnnscanbeparallel-cu124')" },
+    { name = "nvidia-cublas-cu12", marker = "(sys_platform != 'emscripten' and sys_platform != 'win32' and extra != 'extra-26-nonlinearrnnscanbeparallel-cpu') or (extra == 'extra-26-nonlinearrnnscanbeparallel-cpu' and extra == 'extra-26-nonlinearrnnscanbeparallel-cu124')" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/9f/fd/713452cd72343f682b1c7b9321e23829f00b842ceaedcda96e742ea0b0b3/nvidia_cudnn_cu12-9.1.0.70-py3-none-manylinux2014_x86_64.whl", hash = "sha256:165764f44ef8c61fcdfdfdbe769d687e06374059fbb388b6c89ecb0e28793a6f", size = 664752741, upload-time = "2024-04-22T15:24:15.253Z" },
@@ -2241,7 +2233,7 @@ name = "nvidia-cufft-cu12"
 version = "11.2.1.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "nvidia-nvjitlink-cu12", marker = "(sys_platform != 'emscripten' and sys_platform != 'win32' and extra != 'extra-26-nonlinearrnnscanbeparallel-cpu') or (sys_platform == 'emscripten' and extra == 'extra-26-nonlinearrnnscanbeparallel-cu124') or (sys_platform == 'win32' and extra == 'extra-26-nonlinearrnnscanbeparallel-cu124') or (extra == 'extra-26-nonlinearrnnscanbeparallel-cpu' and extra == 'extra-26-nonlinearrnnscanbeparallel-cu124')" },
+    { name = "nvidia-nvjitlink-cu12", marker = "(sys_platform != 'emscripten' and sys_platform != 'win32' and extra != 'extra-26-nonlinearrnnscanbeparallel-cpu') or (extra == 'extra-26-nonlinearrnnscanbeparallel-cpu' and extra == 'extra-26-nonlinearrnnscanbeparallel-cu124')" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/7a/8a/0e728f749baca3fbeffad762738276e5df60851958be7783af121a7221e7/nvidia_cufft_cu12-11.2.1.3-py3-none-manylinux2014_aarch64.whl", hash = "sha256:5dad8008fc7f92f5ddfa2101430917ce2ffacd86824914c82e28990ad7f00399", size = 211422548, upload-time = "2024-06-18T19:33:39.396Z" },
@@ -2264,9 +2256,9 @@ name = "nvidia-cusolver-cu12"
 version = "11.6.1.9"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "nvidia-cublas-cu12", marker = "(sys_platform != 'emscripten' and sys_platform != 'win32' and extra != 'extra-26-nonlinearrnnscanbeparallel-cpu') or (sys_platform == 'emscripten' and extra == 'extra-26-nonlinearrnnscanbeparallel-cu124') or (sys_platform == 'win32' and extra == 'extra-26-nonlinearrnnscanbeparallel-cu124') or (extra == 'extra-26-nonlinearrnnscanbeparallel-cpu' and extra == 'extra-26-nonlinearrnnscanbeparallel-cu124')" },
-    { name = "nvidia-cusparse-cu12", marker = "(sys_platform != 'emscripten' and sys_platform != 'win32' and extra != 'extra-26-nonlinearrnnscanbeparallel-cpu') or (sys_platform == 'emscripten' and extra == 'extra-26-nonlinearrnnscanbeparallel-cu124') or (sys_platform == 'win32' and extra == 'extra-26-nonlinearrnnscanbeparallel-cu124') or (extra == 'extra-26-nonlinearrnnscanbeparallel-cpu' and extra == 'extra-26-nonlinearrnnscanbeparallel-cu124')" },
-    { name = "nvidia-nvjitlink-cu12", marker = "(sys_platform != 'emscripten' and sys_platform != 'win32' and extra != 'extra-26-nonlinearrnnscanbeparallel-cpu') or (sys_platform == 'emscripten' and extra == 'extra-26-nonlinearrnnscanbeparallel-cu124') or (sys_platform == 'win32' and extra == 'extra-26-nonlinearrnnscanbeparallel-cu124') or (extra == 'extra-26-nonlinearrnnscanbeparallel-cpu' and extra == 'extra-26-nonlinearrnnscanbeparallel-cu124')" },
+    { name = "nvidia-cublas-cu12", marker = "(sys_platform != 'emscripten' and sys_platform != 'win32' and extra != 'extra-26-nonlinearrnnscanbeparallel-cpu') or (extra == 'extra-26-nonlinearrnnscanbeparallel-cpu' and extra == 'extra-26-nonlinearrnnscanbeparallel-cu124')" },
+    { name = "nvidia-cusparse-cu12", marker = "(sys_platform != 'emscripten' and sys_platform != 'win32' and extra != 'extra-26-nonlinearrnnscanbeparallel-cpu') or (extra == 'extra-26-nonlinearrnnscanbeparallel-cpu' and extra == 'extra-26-nonlinearrnnscanbeparallel-cu124')" },
+    { name = "nvidia-nvjitlink-cu12", marker = "(sys_platform != 'emscripten' and sys_platform != 'win32' and extra != 'extra-26-nonlinearrnnscanbeparallel-cpu') or (extra == 'extra-26-nonlinearrnnscanbeparallel-cpu' and extra == 'extra-26-nonlinearrnnscanbeparallel-cu124')" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/46/6b/a5c33cf16af09166845345275c34ad2190944bcc6026797a39f8e0a282e0/nvidia_cusolver_cu12-11.6.1.9-py3-none-manylinux2014_aarch64.whl", hash = "sha256:d338f155f174f90724bbde3758b7ac375a70ce8e706d70b018dd3375545fc84e", size = 127634111, upload-time = "2024-06-18T19:35:01.793Z" },
@@ -2279,7 +2271,7 @@ name = "nvidia-cusparse-cu12"
 version = "12.3.1.170"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "nvidia-nvjitlink-cu12", marker = "(sys_platform != 'emscripten' and sys_platform != 'win32' and extra != 'extra-26-nonlinearrnnscanbeparallel-cpu') or (sys_platform == 'emscripten' and extra == 'extra-26-nonlinearrnnscanbeparallel-cu124') or (sys_platform == 'win32' and extra == 'extra-26-nonlinearrnnscanbeparallel-cu124') or (extra == 'extra-26-nonlinearrnnscanbeparallel-cpu' and extra == 'extra-26-nonlinearrnnscanbeparallel-cu124')" },
+    { name = "nvidia-nvjitlink-cu12", marker = "(sys_platform != 'emscripten' and sys_platform != 'win32' and extra != 'extra-26-nonlinearrnnscanbeparallel-cpu') or (extra == 'extra-26-nonlinearrnnscanbeparallel-cpu' and extra == 'extra-26-nonlinearrnnscanbeparallel-cu124')" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/96/a9/c0d2f83a53d40a4a41be14cea6a0bf9e668ffcf8b004bd65633f433050c0/nvidia_cusparse_cu12-12.3.1.170-py3-none-manylinux2014_aarch64.whl", hash = "sha256:9d32f62896231ebe0480efd8a7f702e143c98cfaa0e8a76df3386c1ba2b54df3", size = 207381987, upload-time = "2024-06-18T19:35:32.989Z" },
@@ -3180,29 +3172,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/ca/99/5a5b6f19ff9f083671ddf7b9632028436167cd3d33e11015754e41b249a4/sympy-1.13.1.tar.gz", hash = "sha256:9cebf7e04ff162015ce31c9c6c9144daa34a93bd082f54fd8f12deca4f47515f", size = 7533040, upload-time = "2024-07-19T09:26:51.238Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/b2/fe/81695a1aa331a842b582453b605175f419fe8540355886031328089d840a/sympy-1.13.1-py3-none-any.whl", hash = "sha256:db36cdc64bf61b9b24578b6f7bab1ecdd2452cf008f34faa33776680c26d66f8", size = 6189177, upload-time = "2024-07-19T09:26:48.863Z" },
-]
-
-[[package]]
-name = "taichi"
-version = "1.7.4"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "colorama" },
-    { name = "dill" },
-    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12' or (extra == 'extra-26-nonlinearrnnscanbeparallel-cpu' and extra == 'extra-26-nonlinearrnnscanbeparallel-cu124')" },
-    { name = "numpy", version = "2.5.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12' or (extra == 'extra-26-nonlinearrnnscanbeparallel-cpu' and extra == 'extra-26-nonlinearrnnscanbeparallel-cu124')" },
-    { name = "rich" },
-]
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/23/89/3a920b880e058b4d8c5b0fe1e695481725707aab5ac35b3e91295903dda0/taichi-1.7.4-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:4cbb5a16cac228862c5da2ec71ef722e637c7a5ebf636f8f11000c2f8a9b6693", size = 50437174, upload-time = "2025-07-31T14:49:20.548Z" },
-    { url = "https://files.pythonhosted.org/packages/bc/c6/90b110c26588e9c8f1f71d1485b176e547b581075102d54aeb38d2e48ae4/taichi-1.7.4-cp311-cp311-manylinux_2_27_x86_64.whl", hash = "sha256:5c3c1624daeb1554c1a2b6ee9f9b8398bd8392d7f89fc65395f94baecf049f89", size = 56180510, upload-time = "2025-07-31T14:48:47.605Z" },
-    { url = "https://files.pythonhosted.org/packages/45/35/0495da9f8f0afa801a8e2da262fb75814bf9a4d788946c40bfc9340bf088/taichi-1.7.4-cp311-cp311-win_amd64.whl", hash = "sha256:767d977f077efcc83eb746a8dd1ccd196db782f48eac07c495922b36f8828e2c", size = 83206769, upload-time = "2025-07-31T14:48:59.236Z" },
-    { url = "https://files.pythonhosted.org/packages/ef/5b/7c7d6b8259fba064a4b3908f67f2488efbc3104d2a2fbaba00d81d30bac2/taichi-1.7.4-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:5c7d188f8a8a15f07b197aa881517ffc7459663ee25a0e36636ce347c0649353", size = 50345635, upload-time = "2025-07-31T14:49:27.27Z" },
-    { url = "https://files.pythonhosted.org/packages/74/74/c7aca2af38d38efe9ad8430864e97e87c0b0d4affa2ea6cc4aecbbcfdb0e/taichi-1.7.4-cp312-cp312-manylinux_2_27_x86_64.whl", hash = "sha256:6f1303aedae3ea25e33cef5f30259fc2f66c7f0287433c4e31bdb25fdcd4d81e", size = 56298504, upload-time = "2025-07-31T14:48:55.232Z" },
-    { url = "https://files.pythonhosted.org/packages/27/32/5882f3fafbd981fe060c7ee96355161b82c78e7624a4460eefaf2760ea64/taichi-1.7.4-cp312-cp312-win_amd64.whl", hash = "sha256:d078481d84032d9284a12a0b78672a4a2915786d9106791fad657c09352e9565", size = 83312702, upload-time = "2025-07-31T14:49:03.715Z" },
-    { url = "https://files.pythonhosted.org/packages/93/62/7a5c8562550e17054ea59e41de9b82680f19b5e45442f6967f442aeb8e60/taichi-1.7.4-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:a907fc86029c4b5ba85352a77f48af14717711466def8d6d2b8b17d75311c30f", size = 50439402, upload-time = "2025-07-31T14:48:51.558Z" },
-    { url = "https://files.pythonhosted.org/packages/81/cd/3858352ede95ad71a8bec677da440011b42df0214ee675a3dd3f0dea607a/taichi-1.7.4-cp313-cp313-manylinux_2_27_x86_64.whl", hash = "sha256:001ff64725e58e25ff832facc4ff1ed5ded968c64d5cd46275795999f1cce4e0", size = 56298954, upload-time = "2025-07-31T14:49:17.104Z" },
-    { url = "https://files.pythonhosted.org/packages/10/43/0f4eac57b2eaee9e906139794eb12e752a7f8d077bbd1be695acdc9d117c/taichi-1.7.4-cp313-cp313-win_amd64.whl", hash = "sha256:ff9847a788c2193df61626266eb2df2ce679c372cb1669ffa806e7c45722ddc7", size = 83313386, upload-time = "2025-07-31T14:48:38.371Z" },
 ]
 
 [[package]]
