@@ -249,11 +249,14 @@ class ParallelRNNTrainer(nn.Module):
             [TranslatorStack(**translator_kwargs) for _ in range(num_layers)]
         )
 
-        # Input projection to hidden_dim (if needed) for first layer
+        # Input projection to hidden_dim (if needed) for first layer.
+        # Targets that own their embedding (e.g. NanoRNN.wte) already emit
+        # hidden_dim, so the dummy input_dim must not create a bogus proj.
         self.input_proj = nn.Identity()
         if hasattr(target_rnn, "input_dim"):
+            owns_embedding = hasattr(target_rnn, "wte") or hasattr(target_rnn, "_embed")
             input_dim = getattr(target_rnn, "input_dim", hidden_dim)
-            if isinstance(input_dim, int) and input_dim != hidden_dim:
+            if not owns_embedding and isinstance(input_dim, int) and input_dim != hidden_dim:
                 self.input_proj = nn.Linear(input_dim, hidden_dim, bias=False)
 
     def forward(
@@ -314,8 +317,13 @@ class ParallelRNNTrainer(nn.Module):
                 stacklevel=2,
             )
 
-        # Project input to hidden_dim
-        x = self.input_proj(x)
+        # Project input to hidden_dim only when it actually needs it.
+        if (
+            not isinstance(self.input_proj, nn.Identity)
+            and x.shape[-1] == self.input_proj.in_features
+            and x.shape[-1] != self.hidden_dim
+        ):
+            x = self.input_proj(x)
 
         # Process layer by layer
         layer_input = x
@@ -728,7 +736,12 @@ class ParallelRNNTrainer(nn.Module):
 
     def get_boundary_states(self, x: torch.Tensor) -> list[torch.Tensor]:
         """Get translated boundary states for all layers for inspection."""
-        x = self.input_proj(x)
+        if (
+            not isinstance(self.input_proj, nn.Identity)
+            and x.shape[-1] == self.input_proj.in_features
+            and x.shape[-1] != self.hidden_dim
+        ):
+            x = self.input_proj(x)
         B, T, _ = x.shape
         num_chunks = (T + self.chunk_size - 1) // self.chunk_size
         # Aligned with forward: chunk m starts from the scanner state before
