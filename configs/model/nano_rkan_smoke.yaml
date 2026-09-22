@@ -1,15 +1,15 @@
 name: "nano_rnn"
 mixer_type: "rkan"
 vocab_size: 50257
-hidden_dim: 256
-num_layers: 4
+hidden_dim: 64
+num_layers: 2
 num_heads: 4
 mlp_hidden_mult: 4
 ff_type: "mlp"
 dropout: 0.0
 tie_embeddings: true
 use_pos_emb: false
-max_seq_len: 256
+max_seq_len: 64
 key_dim: 64
 value_dim: 16
 rkan_degree: 3
@@ -27,4 +27,4 @@ min_lr_ratio: 0.1
 target_grad_clip: 1.0
 scaffold_grad_clip: 0.5
 translator_grad_clip: 0.5
-bptt_max_seq_len: 256
+bptt_max_seq_len: 64

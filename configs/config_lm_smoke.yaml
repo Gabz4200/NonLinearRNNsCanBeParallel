@@ -1,0 +1,55 @@
+defaults:
+  - model: nano_rkan_smoke
+  - _self_
+
+# Smoke task: causal LM on a tiny OpenThoughts-114k slice, parallel only.
+# Fits a CPU-only box: small model, short sequences, chunk_size < seq_len
+# so the parallel path genuinely engages (num_chunks > 1).
+task: openthoughts_lm
+
+models:
+  - nano_rnn
+
+modes:
+  - parallel
+
+fast_dev_run: false
+
+data:
+  task: "openthoughts_lm"
+  dataset_name: "open-thoughts/OpenThoughts-114k"
+  dataset_split: "train"
+  subset_num_samples: 64
+  subset_seed: 42
+  tokenizer_name: "gpt2"
+  max_seq_len: 64
+  block_size: 64
+  val_split: 0.02
+  test_split: 0.02
+  batch_size: 2
+  num_workers: 0
+  streaming: true
+  trust_remote_code: false
+
+parallel:
+  chunk_size: 16
+  scaffold_dim: 32
+  scaffold_type: min_gru
+  scaffold_num_layers: 1
+  translator_type: null
+  translator_num_layers: 1
+  detach_boundary: false
+  use_gdn2_init: true
+
+trainer:
+  accelerator: "cpu"
+  devices: 1
+  max_epochs: 1
+  precision: "32-true"
+  log_every_n_steps: 1
+  gradient_clip_val: 1.0
+  accumulate_grad_batches: 1
+
+callbacks:
+  model_checkpoint: false
+  early_stopping: false
