@@ -22,4 +22,3 @@ fast_dev_run: false
 callbacks:
   model_checkpoint: true
   early_stopping: true
-  gradient_clipping: true

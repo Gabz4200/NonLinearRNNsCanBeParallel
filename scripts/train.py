@@ -49,7 +49,7 @@ import hydra
 import lightning as pl
 import torch
 from _util import TRAINING_KEYS, node_dict
-from lightning.pytorch.callbacks import Callback
+from lightning.pytorch.callbacks import Callback, ModelCheckpoint
 from omegaconf import DictConfig, OmegaConf
 
 from nonlinearrnnscanbeparallel.data.datamodule import GraphConnectivityDataModule
@@ -59,6 +59,7 @@ from nonlinearrnnscanbeparallel.data.graph_reachability import (
 )
 from nonlinearrnnscanbeparallel.data.long_sequence import LongSequenceLMDataModule
 from nonlinearrnnscanbeparallel.data.openthoughts_lm import OpenThoughtsLMDataModule
+from nonlinearrnnscanbeparallel.data.wikipedia_lm import WikipediaLMDataModule
 from nonlinearrnnscanbeparallel.models.nano_rnn import NanoRNN
 from nonlinearrnnscanbeparallel.models.parallel_wrapper import (
     ParallelRNNTrainer,
@@ -110,6 +111,9 @@ def _build_datamodule(task: str, data_cfg: dict[str, Any]) -> pl.LightningDataMo
     if task == "openthoughts_lm":
         data_cfg.pop("task", None)
         return OpenThoughtsLMDataModule(data_cfg)
+    if task == "wikipedia_lm":
+        data_cfg.pop("task", None)
+        return WikipediaLMDataModule(data_cfg)
     return GraphConnectivityDataModule(data_cfg)
 
 
@@ -206,7 +210,7 @@ def _build_task(
             float(model_cfg.get("target_grad_clip", 1.0)),
         )
 
-    if task == "openthoughts_lm":
+    if task in ("openthoughts_lm", "wikipedia_lm"):
         if mode == "parallel":
             backbone = _parallel_backbone(1024, 256)
             return (
@@ -304,11 +308,20 @@ def _run_one(
     elapsed = time.time() - start
 
     metrics = {k: float(v) for k, v in trainer.callback_metrics.items()}
+    best_ckpt = next(
+        (
+            cb.best_model_path
+            for cb in cast(Any, trainer).callbacks
+            if isinstance(cb, ModelCheckpoint)
+        ),
+        "",
+    )
     result = {
         "model": model_name,
         "mode": mode,
         "time_seconds": elapsed,
         "trainable_params": sum(p.numel() for p in lit_task.parameters() if p.requires_grad),
+        "checkpoint": best_ckpt,
         "metrics": metrics,
     }
     curves = {
@@ -368,6 +381,8 @@ def main(cfg: DictConfig) -> None:
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     results_dir = PROJECT_ROOT / "results" / f"{task_name}_{timestamp}"
     results_dir.mkdir(parents=True, exist_ok=True)
+    with (results_dir / "config.yaml").open("w") as file:
+        file.write(OmegaConf.to_yaml(cfg))
 
     run_id = f"{task_name} x {','.join(models)} x {','.join(modes)}"
     print(f"\n{'=' * 60}\nRUN: {run_id}\nResults: {results_dir}\n{'=' * 60}")

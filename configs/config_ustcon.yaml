@@ -18,6 +18,13 @@ modes:
   - parallel
   - bptt
 
+# Chunk 64 < max_seq_len 256 so the scaffold/translator path genuinely
+# engages (chunk_size >= seq_len falls back to single-chunk sequential).
+# Scaffold dim must be divisible by model.num_heads (4 here).
+parallel:
+  chunk_size: 64
+  scaffold_dim: 128
+
 # Optional: override specific keys here
 fast_dev_run: false
 callbacks:

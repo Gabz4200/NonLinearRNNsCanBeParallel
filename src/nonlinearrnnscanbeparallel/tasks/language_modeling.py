@@ -13,7 +13,7 @@ import lightning as pl
 import torch
 from torch import nn
 
-from ..logging.metrics import perplexity, token_accuracy
+from ..logging.metrics import negative_log_likelihood, perplexity, token_accuracy
 from ..losses.language_modeling import causal_lm_loss
 from ..models.base import RNNStateList, chunked_forward_bptt
 from ..models.parallel_wrapper import get_cosine_schedule_with_warmup
@@ -78,12 +78,21 @@ class LMLightningTask(pl.LightningModule):
         logits, _ = self._forward(batch["input_ids"])
         loss = self.criterion(logits, batch["labels"])
         self.log("train/loss", loss, prog_bar=True, on_step=True, on_epoch=True)
+        # The shifted cross-entropy loss already is the mean per-token NLL;
+        # log it under its own name as the primary LM metric.
+        self.log("train/nll", loss, prog_bar=False, on_step=True, on_epoch=True)
         return loss
 
     def validation_step(self, batch: dict[str, torch.Tensor], batch_idx: int) -> None:
         logits, _ = self._forward(batch["input_ids"])
         loss = self.criterion(logits, batch["labels"])
         self.log("val/loss", loss, on_epoch=True, prog_bar=True)
+        self.log(
+            "val/nll",
+            negative_log_likelihood(logits[:, :-1], batch["labels"][:, 1:]),
+            on_epoch=True,
+            prog_bar=False,
+        )
         self.log("val/ppl", perplexity(float(loss)), on_epoch=True, prog_bar=True)
         self.log(
             "val/acc",

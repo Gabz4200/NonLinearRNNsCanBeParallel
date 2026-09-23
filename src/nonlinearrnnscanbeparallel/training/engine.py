@@ -13,7 +13,10 @@ def _model_checkpoint() -> ModelCheckpoint:
         monitor="val/loss",
         mode="min",
         save_top_k=1,
-        filename="best-{epoch:02d}-{val_loss:.4f}",
+        # Template key must match the logged metric name exactly ("val/loss",
+        # not "val_loss"); auto_insert off so the "/" never lands in the file name.
+        filename="best-epoch={epoch:02d}-val_loss={val/loss:.4f}",
+        auto_insert_metric_name=False,
     )
 
 

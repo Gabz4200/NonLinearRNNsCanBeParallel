@@ -7,7 +7,11 @@ import math
 import pytest
 import torch
 
-from nonlinearrnnscanbeparallel.logging.metrics import perplexity, token_accuracy
+from nonlinearrnnscanbeparallel.logging.metrics import (
+    negative_log_likelihood,
+    perplexity,
+    token_accuracy,
+)
 from nonlinearrnnscanbeparallel.losses.language_modeling import causal_lm_loss
 
 
@@ -49,3 +53,21 @@ def test_when_token_accuracy_then_ignores_masked() -> None:
     logits = torch.tensor([[[5.0, 0.0], [0.0, 5.0]]])
     targets = torch.tensor([[0, -100]])
     assert token_accuracy(logits, targets) == pytest.approx(1.0)
+
+
+def test_when_nll_computed_then_matches_cross_entropy() -> None:
+    torch.manual_seed(1)
+    logits = torch.randn(2, 6, 9)
+    labels = torch.randint(0, 9, (2, 6))
+    labels[0, 2] = -100
+    got = negative_log_likelihood(logits, labels)
+    expected = torch.nn.functional.cross_entropy(
+        logits.reshape(-1, 9), labels.reshape(-1), ignore_index=-100
+    ).item()
+    assert got == pytest.approx(expected)
+
+
+def test_when_nll_all_masked_then_zero() -> None:
+    logits = torch.randn(1, 3, 4)
+    labels = torch.full((1, 3), -100)
+    assert negative_log_likelihood(logits, labels) == 0.0
