@@ -1,7 +1,7 @@
-# Parallel RNN Training Results
+# Parallel RNN training results
 
 **Date:** 2026-09-18
-**Experiment:** Parallel chunkwise training of nonlinear RNNs on Graph Connectivity Task
+**Experiment:** Parallel chunkwise training of nonlinear RNNs on graph connectivity
 
 ---
 
@@ -15,23 +15,23 @@ The parallel chunkwise training framework implements the architecture from the P
 
 1. **Scaffold (minGRU)** - Per-layer parallel-scannable minGRU that scans the layer's input to produce boundary summaries
 2. **Translator** - Per-layer boundary state translator (MLP for MLP-RNN/minGRU/minLSTM; rKAN for rKAN-RNN; MLP for M2RNN) with GDN-2 initialization (Xavier uniform, gain 2⁻²·⁵)
-3. **Parallel Chunk Execution** - True parallel chunk execution via `[B,T,D] → [M·B,C,D]` reshape
-4. **Gradient Isolation** - Target gradients from within-chunk BPTT; scaffold/translator gradients from boundary path
+3. **Parallel chunk execution** - Chunk execution via `[B,T,D] → [M·B,C,D]` reshape
+4. **Gradient isolation** - Target gradients from within-chunk BPTT; scaffold/translator gradients from boundary path
 5. **Inference** - Plain sequential RNN (scaffold/translator discarded)
 
 ### Task
 
-**Graph Connectivity Classification (sorted deterministic)** - Nodes in topological order, each node has at most one outgoing edge. Encoded in unary as specified in the paper: BOS, edges in unary, source, target, EOS. Binary classification at the last token (EOS position).
+**Graph connectivity classification (sorted deterministic)** - Nodes in topological order, each node has at most one outgoing edge. Encoded in unary as specified in the paper: BOS, edges in unary, source, target, EOS. Binary classification at the last token (EOS position).
 
 ---
 
-## Models Tested (Nonlinear RNN Targets)
+## Models tested (nonlinear RNN targets)
 
 | Model | Architecture | Target Type | Description |
 |-------|-------------|-------------|-------------|
-| **MLP-RNN** | Multi-layer MLP-RNN (2-layer MLP heads, 2-layer FFN) | `mlp` | 2-layer MLP with SiLU per head |
-| **rKAN-RNN** | rKAN-RNN (edge-wise rational KAN heads, 2-layer rKAN FFN) | `rkan` | Edge-wise Padé approximants per connection |
-| **M2RNN** | Matrix-to-Matrix RNN (matrix state [N,K,V], depthwise conv) | `m2rnn` | Matrix-valued recurrent state with associative recall |
+| MLP-RNN | Multi-layer MLP-RNN (2-layer MLP heads, 2-layer FFN) | `mlp` | 2-layer MLP with SiLU per head |
+| rKAN-RNN | rKAN-RNN (edge-wise rational KAN heads, 2-layer rKAN FFN) | `rkan` | Edge-wise Padé approximants per connection |
+| M2RNN | Matrix-to-Matrix RNN (matrix state [N,K,V], depthwise conv) | `m2rnn` | Matrix-valued recurrent state with associative recall |
 
 > **Note:** minGRU and minLSTM are used as scaffolds only (for parallel prefix scanning). They are not trained as target RNNs.
 
@@ -68,107 +68,94 @@ loss: CrossEntropyLoss (ignore_index=-100)
 
 ---
 
-## Training Configuration Breakdown
+## Training configuration breakdown
 
 | Parameter | Value | Implication |
 |-----------|-------|-------------|
-| **Total training samples** | 5,000 | Small dataset; fast iterations |
-| **Validation samples** | ~500 (10%) | Reasonable validation signal |
-| **Test samples** | ~500 (10%) | Held-out evaluation |
-| **Batch size** | 32 | 125 batches/epoch (5,000 × 0.9 / 32 ≈ 125) |
-| **Sequence length (max)** | 66 tokens | Short sequences; 1 chunk = 4 tokens → 17 chunks/seq |
-| **Chunk size** | 4 | Small chunks = more parallelism, more boundary approximations |
-| **Total training steps** | 375 (3 epochs × 125 steps) | Very short training |
-| **Scaffold dim** | 16 | Same as hidden_dim; scaffold processes same dimension |
+| Total training samples | 5,000 | Small dataset; fast iterations |
+| Validation samples | ~500 (10%) | Reasonable validation signal |
+| Test samples | ~500 (10%) | Held-out evaluation |
+| Batch size | 32 | 125 batches/epoch (5,000 × 0.9 / 32 ≈ 125) |
+| Sequence length (max) | 66 tokens | Short sequences; 1 chunk = 4 tokens → 17 chunks/seq |
+| Chunk size | 4 | Small chunks = more parallelism, more boundary approximations |
+| Total training steps | 375 (3 epochs × 125 steps) | Very short training |
+| Scaffold dim | 16 | Same as hidden_dim; scaffold processes same dimension |
 
 ---
 
-## Results Summary
+## Results summary
 
 | Model | Final Train Loss | Final Val Loss | Epochs | Steps/Epoch | Params |
 |-------|------------------|----------------|--------|-------------|--------|
-| **MLP-RNN** | 0.3607 | **0.1413** | 3 | 125 | ~15K |
-| **rKAN-RNN** | 0.2785 | 0.2532 | 3 | 125 | ~18K |
-| **M2RNN** | 0.2779 | 0.3188 | 3 | 125 | ~7.5K |
+| MLP-RNN | 0.3607 | 0.1413 | 3 | 125 | ~15K |
+| rKAN-RNN | 0.2785 | 0.2532 | 3 | 125 | ~18K |
+| M2RNN | 0.2779 | 0.3188 | 3 | 125 | ~7.5K |
 
-**Best validation loss:** MLP-RNN (0.1413)
-**Best training loss:** M2RNN (0.2779) / rKAN-RNN (0.2785)
+Best validation loss: MLP-RNN (0.1413).
+Best training loss: M2RNN (0.2779) / rKAN-RNN (0.2785).
 
 ---
 
-## Detailed Results Analysis
+## Detailed results analysis
 
-### What the Numbers Mean
+### What the numbers mean
 
-#### MLP-RNN (0.3607 train / **0.1413 val**) ⭐
-- **Strong generalization:** Validation loss is **significantly lower** than training loss (val < train by ~2.5×)
-- This is unusual but can happen when:
-  - Dropout (0.1) and weight decay (0.01) regularize heavily during training but are off during validation
-  - The scaffold's boundary approximation acts as regularization (approximation error ≈ dropout on initial state)
-  - The validation set happens to be "easier" (shorter sequences, simpler graphs)
-- **Convergence:** Training loss decreases steadily from ~0.66 → 0.36 over 3 epochs
-- **Validation behavior:** Starts at ~0.33, drops to ~0.14 — the boundary approximation error diminishes as scaffold improves
-- **Best validation loss (0.1413)** — wins on generalization despite higher train loss
+#### MLP-RNN (0.3607 train / 0.1413 val)
+
+Validation loss came in well below training loss (about 2.5x lower), which looks odd but has a few plausible causes: dropout (0.1) and weight decay (0.01) regularize during training and switch off during validation, the scaffold's boundary approximation adds noise that acts like regularization on the initial state, and the validation split may just hold shorter sequences and simpler graphs. Training loss fell steadily from ~0.66 to ~0.36 over the 3 epochs while validation dropped from ~0.33 to ~0.14, so the boundary approximation kept improving as the scaffold learned. It wins on generalization despite the higher train loss.
 
 #### rKAN-RNN (0.2785 train / 0.2532 val)
-- **Better training fit:** Lower training loss than MLP-RNN → rKAN fits training data better
-- **Poorer generalization:** Val loss close to train loss (ratio ~0.9) → less regularization benefit
-- **Edge-wise expressivity:** rKAN's per-edge Padé functions can memorize training patterns more easily
-- **Overfitting risk:** With only 3 epochs and 375 steps, the gap is small but rKAN's higher capacity may overfit sooner with longer training
-- **Stability:** Training loss relatively stable (~0.28-0.29 range in epoch 3)
+
+rKAN fits the training data better than MLP-RNN but its validation loss sits close to its train loss (ratio ~0.9), so it gets less of that regularization benefit. The likely cause is capacity: per-edge Padé functions can memorize training patterns, and with only 375 steps the gap is still small but points toward earlier overfitting on longer runs. Training loss held steady in the ~0.28-0.29 range through epoch 3.
 
 #### M2RNN (0.2779 train / 0.3188 val)
-- **Best training loss (tied with rKAN-RNN):** Matrix-valued state with associative recall enables efficient training
-- **Poor generalization:** Val loss > train loss (0.3188 vs 0.2779) → overfitting
-- **Matrix state capacity:** Matrix state [N,K,V] = 2×8×8 = 128 dims vs hidden_dim=16 → high capacity but small dataset
-- **Slowest training:** ~4.1 it/s vs ~7 it/s for others (conv cache + matrix ops overhead)
-- **Boundary approximation struggles:** 17 boundaries/seq with matrix state = many parameters to approximate
+
+Tied for the best training loss, but validation sits above train (0.3188 vs 0.2779), the classic overfitting signature. The matrix state ([N,K,V] = 2x8x8 = 128 dims against hidden_dim 16) is a lot of capacity for 5K samples. It also trained slowest at ~4.1 it/s against ~7 it/s for the others, from conv-cache and matrix-op overhead, and 17 boundaries per sequence means a lot of matrix states to approximate at chunk edges.
 
 ---
 
-## Positive Contributors
+## What helped
 
 | Factor | Impact |
 |--------|--------|
-| **Parallel chunk execution (chunk_size=4)** | Enables 17× parallelism over sequential (66/4 ≈ 17 chunks); makes training feasible at this seq length |
-| **Scaffold boundary approximation as regularization** | Acts as "dropout on initial state" — forces chunk RNN to self-correct from perturbed states, improving generalization (especially MLP-RNN) |
-| **GDN-2 translator init (Xavier gain 2⁻²·⁵)** | Keeps boundary states well-conditioned early in training; prevents exploding/vanishing gradients at boundaries |
-| **Per-layer scaffolds + translators** | Each layer gets specialized boundary modeling; improves gradient flow through deep stacks |
-| **Residual connections in target RNNs** | Keeps boundary map near identity; makes scaffold's job easier (approximating near-identity map) |
-| **RMSNorm on scaffold/translator I/O** | Keeps boundary state norms controlled; prevents scale explosion across chunks |
-| **Gradient isolation (detach_boundary option)** | Cleanly separates target gradients (within-chunk) from scaffold/translator gradients (boundary path) |
+| Parallel chunk execution (chunk_size=4) | 17 chunks per sequence (66/4); makes training feasible at this length |
+| Scaffold boundary approximation as regularization | Noisy boundary states force each chunk to self-correct, which improved generalization (most visible in MLP-RNN) |
+| GDN-2 translator init (Xavier gain 2⁻²·⁵) | Keeps boundary states well-conditioned early; avoids exploding/vanishing gradients at boundaries |
+| Per-layer scaffolds + translators | Each layer models its own boundaries; better gradient flow through the stack |
+| Residual connections in target RNNs | Keeps the boundary map near identity, which is an easier target for the scaffold to approximate |
+| RMSNorm on scaffold/translator I/O | Keeps boundary state norms bounded across chunks |
+| Gradient isolation (detach_boundary option) | Separates target gradients (within-chunk) from scaffold/translator gradients (boundary path) |
 
 ---
 
-## Negative Contributors / Limitations
+## Limitations
 
 | Factor | Impact |
 |--------|--------|
-| **Very short training (3 epochs / 375 steps)** | Far from convergence; both models would improve significantly with more training |
-| **Small dataset (5,000 samples)** | Limits generalization measurement; validation variance is high |
-| **Short sequences (max 66 tokens)** | Doesn't stress-test the chunkwise framework; boundary errors have little time to amplify |
-| **Small chunk size (4)** | Many boundaries (17/seq) = more approximation errors; larger chunks would reduce boundary count but increase sequential depth |
-| **Small scaffold_dim (16 = hidden_dim)** | Scaffold capacity equals target; no compression, but also no bottleneck |
-| **rKAN edge-wise overfitting** | rKAN's per-edge Padé functions can fit noise; needs more regularization (weight decay, dropout) or more data |
-| **M2RNN matrix state overfitting** | Matrix state (128 dims) with only 5K samples → severe overfitting; val loss > train loss |
-| **M2RNN slow training** | Matrix operations + conv cache = 4× slower than MLP-RNN (4.1 vs 7 it/s) |
-| **Only 3 epochs** | Validation loss still decreasing — no plateau reached; early stopping would be premature |
-| **Binary classification at single token** | Loss signal only at EOS; 65/66 timesteps produce no gradient signal (ignored via ignore_index=-100) |
+| Very short training (3 epochs / 375 steps) | Far from convergence; all models would improve with more training |
+| Small dataset (5,000 samples) | Limits what generalization numbers can say; validation variance is high |
+| Short sequences (max 66 tokens) | Doesn't stress the chunkwise framework; boundary errors have little room to compound |
+| Small chunk size (4) | 17 boundaries per sequence means more approximation error; larger chunks would cut boundaries but add sequential depth |
+| Small scaffold_dim (16 = hidden_dim) | No compression but also no bottleneck |
+| rKAN edge-wise overfitting | Per-edge Padé functions fit noise; needs more regularization or more data |
+| M2RNN matrix state overfitting | 128-dim state on 5K samples; val loss above train loss |
+| M2RNN slow training | Matrix ops + conv cache run ~4x slower than MLP-RNN (4.1 vs 7 it/s) |
+| Loss signal only at EOS | Binary label at one token; 65/66 timesteps carry no gradient (ignore_index=-100) |
 
 ---
 
-## Files in This Directory
+## Files in this directory
 
 | File | Description |
 |------|-------------|
 | `training_results.json` | Complete loss histories (train/val per step/epoch for all models) |
-| `loss_curves.png` | Per-model training & validation loss curves (log scale) |
+| `loss_curves.png` | Per-model training and validation loss curves (log scale) |
 | `val_loss_comparison.png` | Validation loss comparison across all models |
 | `README.md` | This documentation |
 
 ---
 
-## Reproducing Results
+## Reproducing results
 
 ```bash
 cd /home/gabz/Projects/NonLinearRNNsCanBeParallel
@@ -204,7 +191,7 @@ wrapper = ParallelRNNTrainer(target, chunk_size=4, scaffold_dim=16, target_type=
 
 ---
 
-## Framework Code Locations
+## Framework code locations
 
 | Component | Path |
 |-----------|------|
@@ -213,9 +200,3 @@ wrapper = ParallelRNNTrainer(target, chunk_size=4, scaffold_dim=16, target_type=
 | Parallel Wrapper | `src/nonlinearrnnscanbeparallel/models/parallel_wrapper.py` |
 | M2RNN | `src/nonlinearrnnscanbeparallel/models/m2rnn.py` |
 | Tests | `tests/test_scaffold.py`, `tests/test_translator.py`, `tests/test_parallel_wrapper.py` |
-
----
-
-## License
-
-MIT License - See project root for details.
