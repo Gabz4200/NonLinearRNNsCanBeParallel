@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "MLP-RNN and rKAN-RNN implementations with sorted graph connectivity benchmark"
 readme = "README.md"
 requires-python = ">=3.11,<3.14"
-license = { text = "MIT" }
+license = { text = "Apache-2.0" }
 authors = [
     { name = "Researcher", email = "researcher@example.com" },
 ]
