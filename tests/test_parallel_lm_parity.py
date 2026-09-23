@@ -77,4 +77,4 @@ def test_when_lm_tasks_log_then_same_metric_keys() -> None:
         keys[name] = set(logged)
 
     assert keys["bptt"] == keys["parallel"]
-    assert keys["bptt"] == {"val/loss", "val/ppl", "val/acc"}
+    assert keys["bptt"] == {"val/loss", "val/nll", "val/ppl", "val/acc"}

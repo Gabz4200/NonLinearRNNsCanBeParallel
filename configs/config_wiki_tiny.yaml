@@ -1,0 +1,32 @@
+defaults:
+  - model: nano_rkan_tiny
+  - data_wikipedia_tiny
+  - trainer_lm
+  - parallel
+  - _self_
+
+# Tiny Wikipedia LM: fits a CPU-only box (~4 GB), chunked parallel training.
+# Same shape as config_lm_tiny so OpenThoughts and Wikipedia runs compare 1:1.
+task: wikipedia_lm
+
+models:
+  - nano_rnn
+
+modes:
+  - parallel
+
+fast_dev_run: false
+
+parallel:
+  chunk_size: 64
+  scaffold_dim: 64
+
+trainer:
+  max_epochs: 2
+  precision: "32-true"
+  log_every_n_steps: 5
+  accumulate_grad_batches: 1
+
+callbacks:
+  model_checkpoint: true
+  early_stopping: true

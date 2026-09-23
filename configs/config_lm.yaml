@@ -20,8 +20,11 @@ modes:
 # Optional: override specific keys here
 fast_dev_run: false
 
-# Scaffold hidden dim must be divisible by model.num_heads (12 for Tiny).
+# Chunk 256 < block 1024 so the scaffold/translator path genuinely engages
+# (chunk_size >= seq_len falls back to single-chunk sequential and warns).
+# Scaffold hidden dim must be divisible by model.num_heads (8 for Tiny).
 parallel:
+  chunk_size: 256
   scaffold_dim: 384
 
 callbacks:

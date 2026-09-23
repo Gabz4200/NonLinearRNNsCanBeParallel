@@ -22,7 +22,7 @@ rkan_num_basis: 4
 num_classes: 50257
 lr: 3.0e-4
 weight_decay: 0.1
-warmup_ratio: 0.05
+warmup_ratio: 0.1
 min_lr_ratio: 0.1
 target_grad_clip: 1.0
 scaffold_grad_clip: 0.5

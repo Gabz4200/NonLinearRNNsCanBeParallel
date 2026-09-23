@@ -1,0 +1,17 @@
+data:
+  task: "wikipedia_lm"
+  dataset_name: "wikimedia/wikipedia"
+  subsets: ["20231101.en", "20231101.pt"]
+  dataset_split: "train"
+  articles_per_subset: 2000
+  subset_seed: 42
+  tokenizer_name: "gpt2"
+  max_seq_len: 1024
+  block_size: 1024
+  max_article_tokens: 8192
+  val_split: 0.02
+  test_split: 0.02
+  batch_size: 8
+  num_workers: 0
+  streaming: true
+  trust_remote_code: false

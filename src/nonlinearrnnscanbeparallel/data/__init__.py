@@ -16,6 +16,7 @@ from .long_sequence import (
     LongSequenceSample,
 )
 from .openthoughts_lm import OpenThoughtsLMConfig, OpenThoughtsLMDataModule, OpenThoughtsLMDataset
+from .wikipedia_lm import WikipediaLMConfig, WikipediaLMDataModule, WikipediaLMDataset
 
 __all__ = [
     "GraphConnectivityDataModule",
@@ -30,4 +31,7 @@ __all__ = [
     "OpenThoughtsLMConfig",
     "OpenThoughtsLMDataset",
     "OpenThoughtsLMDataModule",
+    "WikipediaLMConfig",
+    "WikipediaLMDataset",
+    "WikipediaLMDataModule",
 ]
