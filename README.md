@@ -3,7 +3,7 @@
 [![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?style=flat-square&logo=python&logoColor=white)](https://www.python.org)
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.6-EE4C2C?style=flat-square&logo=pytorch&logoColor=white)](https://pytorch.org)
 [![Lightning](https://img.shields.io/badge/Lightning-2.3-792EE5?style=flat-square)](https://lightning.ai)
-[![License](https://img.shields.io/badge/License-MIT-blue?style=flat-square)](LICENSE)
+[![License](https://img.shields.io/badge/License-Apache-2.0-blue?style=flat-square)](LICENSE)
 
 Train nonlinear RNNs in parallel chunks without changing what the model learns.
 
