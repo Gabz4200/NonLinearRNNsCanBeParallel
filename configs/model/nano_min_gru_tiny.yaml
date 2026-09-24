@@ -1,7 +1,9 @@
 name: "nano_rnn"
 mixer_type: "min_gru"
 vocab_size: 50257
-head_dim: 64
+# hidden = head_dim * num_heads = 768; sized so the config_lm target lands in
+# the 124M-350M param_count gate (default head_dim 64 falls short at ~65M).
+head_dim: 96
 num_layers: 16
 num_heads: 8
 mlp_hidden_mult: 4

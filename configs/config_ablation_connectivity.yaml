@@ -1,0 +1,52 @@
+defaults:
+  - model
+  - data
+  - trainer
+  - parallel
+  - _self_
+
+# Scaffold ablation on sorted_graph_connectivity: every scaffold (old:
+# min_gru, min_lstm; new: linear_sum, fourier) on one fixed target model,
+# parallel mode only. 4 runs x ~1 min on CPU.
+task: sorted_graph_connectivity
+
+models:
+  - mlp_rnn
+
+modes:
+  - parallel
+
+fast_dev_run: false
+
+# Shrink the default (model.yaml/data.yaml) to keep 4 scaffold runs trivially
+# small: 64-wide 2-layer target, 512 samples, 2 epochs.
+model:
+  hidden_dim: 64
+  num_layers: 2
+
+data:
+  num_samples: 512
+  batch_size: 32
+  num_workers: 0
+
+# Chunk 11 divides max_seq_len 66 (6 chunks) and is < 66//2 (33), so the
+# scaffold/translator path engages at 6 chunk boundaries per sequence.
+# Scaffold dim divisible by model.num_heads (4).
+parallel:
+  chunk_size: 11
+  scaffold_dim: 32
+  scaffold_types: [min_gru, min_lstm, linear_sum, fourier]
+  scaffold_positional: true
+  translator_pre_norm: true
+  translator_norm_type: rmsnorm
+
+trainer:
+  max_epochs: 2
+  precision: "32-true"
+  log_every_n_steps: 5
+  gradient_clip_val: 1.0
+  accumulate_grad_batches: 1
+
+callbacks:
+  model_checkpoint: false
+  early_stopping: false

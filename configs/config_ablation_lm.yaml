@@ -1,0 +1,48 @@
+defaults:
+  - model: nano_rkan_tiny
+  - data_openthoughts_tiny
+  - trainer_lm
+  - parallel
+  - _self_
+
+# Scaffold ablation on OpenThoughts causal LM (the run to actually execute):
+# every scaffold (old: min_gru, min_lstm; new: linear_sum, fourier) on one
+# fixed 4-layer nano target, parallel mode only. Chunk 32 divides block 128
+# (4 chunks) and is < 128//2. ~3-6 min per scaffold on CPU, ~15-25 min total.
+task: openthoughts_lm
+
+models:
+  - nano_rnn
+
+modes:
+  - parallel
+
+fast_dev_run: false
+
+# 256 samples, 128-token blocks, batch 4 -> ~61 batches/epoch; 2 epochs keeps
+# the four runs well under an hour combined (override via CLI to rescale).
+data:
+  subset_num_samples: 256
+  block_size: 128
+  max_seq_len: 128
+  batch_size: 4
+  num_workers: 0
+
+parallel:
+  chunk_size: 32
+  scaffold_dim: 64  # divisible by model.num_heads (8)
+  scaffold_types: [min_gru, min_lstm, linear_sum, fourier]
+  scaffold_positional: true
+  translator_pre_norm: true
+  translator_norm_type: rmsnorm
+
+trainer:
+  max_epochs: 2
+  precision: "32-true"
+  log_every_n_steps: 5
+  gradient_clip_val: 1.0
+  accumulate_grad_batches: 1
+
+callbacks:
+  model_checkpoint: false
+  early_stopping: false

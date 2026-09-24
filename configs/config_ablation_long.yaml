@@ -1,0 +1,55 @@
+defaults:
+  - model_long
+  - data_long
+  - trainer_long
+  - parallel
+  - _self_
+
+# Scaffold ablation on long_sequence/copy: every scaffold (old: min_gru,
+# min_lstm; new: linear_sum, fourier) on one fixed target model, parallel
+# only. Four fourier runs are O(seq_len^2) in the scaffold, so the copy
+# sequence is cut from 16k to 512 to stay cheap. ~2 min per run on CPU.
+task: long_sequence
+
+models:
+  - mlp_rnn
+
+modes:
+  - parallel
+
+fast_dev_run: false
+
+# 64 wide-2-layer target; 512-token copy, 64 samples.
+model:
+  hidden_dim: 256
+  num_layers: 2
+  max_seq_len: 512
+
+data:
+  task_type: "copy"
+  num_samples: 64
+  seq_len: 512
+  delay_len: 40
+  batch_size: 4
+  num_workers: 0
+
+# Chunk 128 < seq 512 so the scaffold/translator path genuinely engages
+# (4 chunks). Scaffold dim divisible by model.num_heads (8).
+parallel:
+  chunk_size: 128
+  scaffold_dim: 128
+  scaffold_types: [min_gru, min_lstm, linear_sum, fourier]
+  scaffold_positional: true
+  translator_pre_norm: true
+  translator_norm_type: rmsnorm
+
+trainer:
+  max_epochs: 1
+  precision: "32-true"
+  log_every_n_steps: 5
+  gradient_clip_val: 1.0
+  accumulate_grad_batches: 1
+
+callbacks:
+  model_checkpoint: false
+  early_stopping: false

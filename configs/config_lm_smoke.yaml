@@ -1,5 +1,6 @@
 defaults:
   - model: nano_rkan_smoke
+  - parallel
   - _self_
 
 # Smoke task: causal LM on a tiny OpenThoughts-114k slice, parallel only.
