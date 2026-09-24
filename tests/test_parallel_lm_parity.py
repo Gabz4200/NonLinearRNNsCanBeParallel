@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+from typing import cast
+
 import torch
 
 import nonlinearrnnscanbeparallel.models  # noqa: F401
 from nonlinearrnnscanbeparallel.models.parallel_wrapper import ParallelRNNTrainer
 from nonlinearrnnscanbeparallel.models.registry import get_model
+from nonlinearrnnscanbeparallel.models.scaffold import LinearSumScaffold, ScaffoldStack
 from nonlinearrnnscanbeparallel.tasks.language_modeling import BPTTLMTask, LMLightningTask
 
 
@@ -44,6 +47,19 @@ def test_when_wrapper_train_forward_then_logits_shape() -> None:
     wrapper.train()
     logits = wrapper(torch.randint(0, 64, (2, 12)))
     assert logits.shape == (2, 12, 64)
+
+
+def test_when_linear_sum_scaffold_training_step_then_finite_loss() -> None:
+    spec = {"vocab_size": 64, "hidden_dim": 32, "bptt_max_seq_len": 12, "total_steps": 10}
+    wrapper = ParallelRNNTrainer(
+        _nano(), chunk_size=4, scaffold_dim=16, scaffold_type="linear_sum", dropout=0.0
+    )
+    parallel = LMLightningTask(spec, wrapper)
+    parallel.train()
+    loss = parallel.training_step(_batch(), 0)
+    assert torch.isfinite(loss)
+    first_scaffold = cast(ScaffoldStack, wrapper.scaffolds[0])
+    assert isinstance(first_scaffold.layers[0], LinearSumScaffold)
 
 
 def test_when_bptt_and_parallel_training_step_then_finite_loss() -> None:

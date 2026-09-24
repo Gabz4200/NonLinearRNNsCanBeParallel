@@ -230,10 +230,41 @@ class MinLSTMScaffold(ScaffoldBase):
         return output.to(input_dtype)
 
 
+class LinearSumScaffold(ScaffoldBase):
+    """Linear projection + position-weighted prefix sum.
+
+    s_t = sum_{i<t} w_i x_i with w = linspace(min_weight, 1.0, t):
+    w_i = min_weight + (1 - min_weight) * i / (t - 1) for t > 1 (and
+    w_0 = min_weight for t = 1). Every prefix token contributes
+    (min_weight > 0), the most recent dominates, older tokens decay
+    linearly. Computed with two cumulative sums, fully parallel over T.
+    """
+
+    def __init__(self, input_dim: int, hidden_dim: int, min_weight: float = 0.1) -> None:
+        super().__init__()
+        if not 0.0 < min_weight < 1.0:
+            raise ValueError("scaffold min_weight must be in (0, 1)")
+        self.min_weight = min_weight
+        self.input_proj = nn.Linear(input_dim, hidden_dim, bias=False)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = self.input_proj(x)  # [B, T, D]
+        sequence_len = x.shape[1]
+        total = x.cumsum(dim=1)  # sum_{i<t} x_i
+        if sequence_len <= 1:
+            return self.min_weight * total
+        positions = torch.arange(sequence_len, device=x.device, dtype=x.dtype)
+        weighted = (x * positions.view(1, -1, 1)).cumsum(dim=1)  # sum_{i<t} i * x_i
+        # w_i = min_weight + (1 - min_weight) * i / (t - 1) for t >= 2
+        scale = torch.zeros(sequence_len, device=x.device, dtype=x.dtype)
+        scale[1:] = (1.0 - self.min_weight) / positions[1:]
+        return self.min_weight * total + weighted * scale.view(1, -1, 1)
+
+
 class ScaffoldStack(ScaffoldBase):
     """Stack of 1..N scaffold layers applied per outer RNN layer.
 
-    ``scaffold_type`` selects the cell (min_gru | min_lstm);
+    ``scaffold_type`` selects the cell (min_gru | min_lstm | linear_sum);
     ``num_layers`` is unbounded (typical 1-4). ``num_layers=1``
     reproduces the legacy single-scaffold behavior exactly.
     """
@@ -246,19 +277,23 @@ class ScaffoldStack(ScaffoldBase):
         num_layers: int = 1,
         num_heads: int = 4,
         dropout: float = 0.0,
+        min_weight: float = 0.1,
     ) -> None:
         super().__init__()
-        if scaffold_type not in ("min_gru", "min_lstm"):
+        if scaffold_type not in ("min_gru", "min_lstm", "linear_sum"):
             raise ValueError(f"Unknown scaffold_type: {scaffold_type}")
         if num_layers < 1:
             raise ValueError("scaffold num_layers must be >= 1")
         self.scaffold_type = scaffold_type
         self.num_scaffold_layers = num_layers
-        cell = MinGRUScaffold if scaffold_type == "min_gru" else MinLSTMScaffold
         layers: list[nn.Module] = []
         in_dim = input_dim
         for _ in range(num_layers):
-            layers.append(cell(in_dim, hidden_dim, num_heads, dropout))
+            if scaffold_type == "linear_sum":
+                layers.append(LinearSumScaffold(in_dim, hidden_dim, min_weight))
+            else:
+                cell = MinGRUScaffold if scaffold_type == "min_gru" else MinLSTMScaffold
+                layers.append(cell(in_dim, hidden_dim, num_heads, dropout))
             in_dim = hidden_dim
         self.layers = nn.ModuleList(layers)
 

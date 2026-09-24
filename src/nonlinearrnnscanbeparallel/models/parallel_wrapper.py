@@ -161,15 +161,19 @@ class ParallelRNNTrainer(nn.Module):
         scaffold_num_layers: int = 1,
         translator_type: str | None = None,
         translator_num_layers: int = 1,
+        translator_pre_norm: bool = True,
+        translator_norm_type: str = "rmsnorm",
     ) -> None:
         """Args:
         target_rnn: target RNN with ``layers`` as [rnn, ff] pairs.
         target_type: deprecated legacy selector for the m2rnn code path
             and default translator. Prefer explicit scaffold/translator keys.
-        scaffold_type: min_gru | min_lstm.
+        scaffold_type: min_gru | min_lstm | linear_sum.
         scaffold_num_layers: stacked scaffold layers per outer layer (1..N).
         translator_type: mlp | rkan, or None to resolve from target_type.
         translator_num_layers: stacked translator layers per outer layer (1..N).
+        translator_pre_norm: pre-normalize translator input (default True).
+        translator_norm_type: rmsnorm | layernorm (default rmsnorm).
         """
         super().__init__()
         if target_type is None:
@@ -236,6 +240,8 @@ class ParallelRNNTrainer(nn.Module):
             "output_shape": output_shape,
             "dropout": dropout,
             "use_gdn2_init": use_gdn2_init,
+            "pre_norm": translator_pre_norm,
+            "norm_type": translator_norm_type,
         }
         if target_type == "m2rnn":
             translator_kwargs.update(

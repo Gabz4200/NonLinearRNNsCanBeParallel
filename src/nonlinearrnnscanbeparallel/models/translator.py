@@ -21,6 +21,14 @@ def _init_gdn2_linear(layer: nn.Linear) -> None:
         nn.init.zeros_(layer.bias)
 
 
+def _build_norm(norm_type: str, dim: int) -> nn.Module:
+    if norm_type == "rmsnorm":
+        return RMSNorm(dim)
+    if norm_type == "layernorm":
+        return nn.LayerNorm(dim)
+    raise ValueError(f"Unknown norm_type: {norm_type}")
+
+
 class _RKANTranslator(nn.Module):
     """rKAN-based translator for rKAN-RNN targets.
 
@@ -39,9 +47,10 @@ class _RKANTranslator(nn.Module):
         rkan_type: str = "jacobi",
         rkan_num_basis: int = 4,
         dropout: float = 0.1,
+        norm_type: str = "rmsnorm",
     ) -> None:
         super().__init__()
-        self.norm = RMSNorm(input_dim)
+        self.norm = _build_norm(norm_type, input_dim)
         self.rkan1 = RKANLayer(
             input_dim,
             hidden_dim * 4,
@@ -101,6 +110,8 @@ class TranslatorLayer(nn.Module):
         num_heads: int = 4,
         key_dim: int = 16,
         value_dim: int = 16,
+        pre_norm: bool = True,
+        norm_type: str = "rmsnorm",
     ) -> None:
         super().__init__()
         if translator_type not in ("mlp", "rkan"):
@@ -118,8 +129,8 @@ class TranslatorLayer(nn.Module):
         self.value_dim = value_dim
         matrix_state_dim = num_heads * key_dim * value_dim
 
-        # Input normalization (on scaffold output)
-        self.input_norm = RMSNorm(input_dim)
+        # Pre-norm (on scaffold output), RMSNorm by default, LayerNorm opt-in
+        self.input_norm = _build_norm(norm_type, input_dim) if pre_norm else nn.Identity()
 
         if translator_type == "mlp":
             out_dim = matrix_state_dim if output_shape == "matrix" else hidden_dim
@@ -146,6 +157,7 @@ class TranslatorLayer(nn.Module):
                 rkan_type=rkan_type,
                 rkan_num_basis=rkan_num_basis,
                 dropout=dropout,
+                norm_type=norm_type,
             )
         # Output normalization (on boundary state before feeding to chunk RNN)
         if output_shape == "matrix":
@@ -216,6 +228,8 @@ class TranslatorStack(nn.Module):
         num_heads: int = 4,
         key_dim: int = 16,
         value_dim: int = 16,
+        pre_norm: bool = True,
+        norm_type: str = "rmsnorm",
     ) -> None:
         super().__init__()
         if num_layers < 1:
@@ -243,6 +257,8 @@ class TranslatorStack(nn.Module):
                     num_heads=num_heads,
                     key_dim=key_dim,
                     value_dim=value_dim,
+                    pre_norm=pre_norm,
+                    norm_type=norm_type,
                 )
             )
             in_dim = hidden_dim

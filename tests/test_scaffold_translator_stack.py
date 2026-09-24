@@ -5,7 +5,9 @@ from __future__ import annotations
 import pytest
 import torch
 
+from nonlinearrnnscanbeparallel.models.base import RMSNorm
 from nonlinearrnnscanbeparallel.models.scaffold import (
+    LinearSumScaffold,
     MinGRUScaffold,
     MinLSTMScaffold,
     ScaffoldStack,
@@ -48,6 +50,67 @@ def test_when_scaffold_stack_depth_three_then_output_shape() -> None:
     )
     assert len(stack.layers) == 3
     assert stack(torch.randn(2, 6, 16)).shape == (2, 6, 8)
+
+
+def test_when_linear_sum_scaffold_then_matches_linspace_reference() -> None:
+    scaffold = LinearSumScaffold(input_dim=16, hidden_dim=8, min_weight=0.1)
+    x = torch.randn(2, 6, 16)
+    out = scaffold(x)
+    proj = x @ scaffold.input_proj.weight.T
+    reference = torch.zeros_like(proj)
+    for t in range(1, proj.shape[1] + 1):
+        weights = torch.linspace(0.1, 1.0, t)
+        reference[:, t - 1] = (proj[:, :t] * weights.view(1, t, 1)).sum(dim=1)
+    torch.testing.assert_close(out, reference)
+    assert out.shape == (2, 6, 8)
+    out.sum().backward()
+    assert scaffold.input_proj.weight.grad is not None
+
+
+def test_when_linear_sum_scaffold_single_position_then_min_weight_scaled() -> None:
+    scaffold = LinearSumScaffold(input_dim=16, hidden_dim=8, min_weight=0.1)
+    x = torch.randn(2, 1, 16)
+    out = scaffold(x).squeeze(1)
+    expected = 0.1 * (x @ scaffold.input_proj.weight.T).squeeze(1)
+    torch.testing.assert_close(out, expected)
+
+
+def test_when_linear_sum_scaffold_stack_depth_three_then_output_shape() -> None:
+    stack = ScaffoldStack(scaffold_type="linear_sum", input_dim=16, hidden_dim=8, num_layers=3)
+    assert len(stack.layers) == 3
+    assert all(isinstance(layer, LinearSumScaffold) for layer in stack.layers)
+    assert stack(torch.randn(2, 6, 16)).shape == (2, 6, 8)
+
+
+def test_when_linear_sum_scaffold_invalid_min_weight_then_raises() -> None:
+    with pytest.raises(ValueError, match="min_weight must be in"):
+        LinearSumScaffold(input_dim=16, hidden_dim=8, min_weight=0.0)
+    with pytest.raises(ValueError, match="min_weight must be in"):
+        LinearSumScaffold(input_dim=16, hidden_dim=8, min_weight=1.0)
+
+
+def test_when_translator_pre_norm_disabled_then_identity() -> None:
+    default = TranslatorLayer(input_dim=12, hidden_dim=16, translator_type="mlp")
+    off = TranslatorLayer(input_dim=12, hidden_dim=16, translator_type="mlp", pre_norm=False)
+    assert isinstance(default.input_norm, RMSNorm)
+    assert isinstance(off.input_norm, torch.nn.Identity)
+
+
+def test_when_translator_norm_type_layernorm_then_used() -> None:
+    layer = TranslatorLayer(
+        input_dim=12, hidden_dim=16, translator_type="mlp", norm_type="layernorm"
+    )
+    assert isinstance(layer.input_norm, torch.nn.LayerNorm)
+    stack = TranslatorStack(
+        input_dim=12, hidden_dim=16, translator_type="mlp", norm_type="layernorm"
+    )
+    assert isinstance(stack.layers[0].input_norm, torch.nn.LayerNorm)
+    assert stack(torch.randn(2, 4, 12)).shape == (2, 4, 16)
+
+
+def test_when_translator_invalid_norm_type_then_raises() -> None:
+    with pytest.raises(ValueError, match="Unknown norm_type"):
+        TranslatorLayer(input_dim=12, hidden_dim=16, translator_type="mlp", norm_type="batchnorm")
 
 
 def test_when_scaffold_stack_invalid_type_then_raises() -> None:
