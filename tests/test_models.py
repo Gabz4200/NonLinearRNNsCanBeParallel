@@ -15,6 +15,7 @@ def test_models_registered() -> None:
     names = list_models()
     assert "mlp_rnn" in names
     assert "rkan_rnn" in names
+    assert "faster_kan_rnn" in names
     assert "m2rnn" in names
     assert "min_gru" in names
     assert "min_lstm" in names
@@ -61,6 +62,25 @@ def test_rkan_rnn_forward_backward() -> None:
 def test_m2rnn_forward_backward() -> None:
     model = get_model(
         "m2rnn",
+        input_dim=64,
+        hidden_dim=64,
+        num_layers=2,
+        num_heads=2,
+        dropout=0.0,
+        num_classes=2,
+    )
+    x = torch.randn(2, 10, 64)
+    state = model.init_state(2, x.device)
+    logits, new_state = model(x, state)
+    assert logits.shape == (2, 10, 2)
+    assert len(new_state) == 2
+    loss = logits.sum()
+    loss.backward()
+
+
+def test_faster_kan_rnn_forward_backward() -> None:
+    model = get_model(
+        "faster_kan_rnn",
         input_dim=64,
         hidden_dim=64,
         num_layers=2,
@@ -251,7 +271,71 @@ def test_rkan_pade_forward_backward() -> None:
     assert layer.theta_d.grad is not None
 
 
-# One task path drives all five registered models.
+# FasterKAN regression tests.
+
+
+def test_faster_kan_layer_shape_grads_and_coordinatewise() -> None:
+    """FasterKANLayer must mix per-coordinate bases and train the spline weights."""
+    from nonlinearrnnscanbeparallel.models.faster_kan import FasterKANLayer
+
+    layer = FasterKANLayer(input_dim=3, output_dim=5, num_grids=8)
+    x = torch.randn(2, 3)
+    out = layer(x)
+    assert out.shape == (2, 5)
+    x_pert = x.clone()
+    x_pert[0, 1] += 3.0
+    assert not torch.allclose(out, layer(x_pert))
+    loss = out.sum()
+    loss.backward()
+    assert layer.spline_linear.weight.grad is not None
+    assert layer.spline_linear.weight.grad.abs().sum() > 0
+
+
+def test_rswaf_basis_bounded_and_grid_symmetric() -> None:
+    """RSWAF lands in [0, 1] and is symmetric about each grid node."""
+    from nonlinearrnnscanbeparallel.models.faster_kan import ReflectionalSwitchBasis
+
+    basis = ReflectionalSwitchBasis()
+    x = torch.linspace(-3.0, 3.0, 121).reshape(-1, 1)
+    vals = basis(x)  # [N, 1, num_grids]
+    assert vals.min() >= 0.0
+    assert vals.max() <= 1.0
+
+    center = basis.grid[4].item()
+    d = 0.37
+    # sech^2 is even: basis j is symmetric about its own grid node.
+    assert torch.allclose(
+        basis(torch.tensor([center + d]).reshape(1, 1))[..., 4],
+        basis(torch.tensor([center - d]).reshape(1, 1))[..., 4],
+    )
+
+
+def test_rswaf_grid_and_inv_denominator_trainable() -> None:
+    """train_grid / train_inv_denominator opt the basis hyperparameters in."""
+    from nonlinearrnnscanbeparallel.models.faster_kan import ReflectionalSwitchBasis
+
+    basis = ReflectionalSwitchBasis(train_grid=True, train_inv_denominator=True)
+    out = basis(torch.randn(4, 6))
+    out.sum().backward()
+    assert basis.grid.grad is not None
+    assert basis.inv_denominator.grad is not None
+
+
+def test_faster_kan_head_ffn_residual_shapes() -> None:
+    """Head maps [h;x] -> h; FFN preserves hidden dim with a residual."""
+    from nonlinearrnnscanbeparallel.models.faster_kan import FasterKanFeedForward, FasterKANHead
+
+    head = FasterKANHead(head_dim=8, fkan_num_grids=4)
+    h_prev = torch.randn(2, 8)
+    x_t = torch.randn(2, 8)
+    assert head(h_prev, x_t).shape == (2, 8)
+
+    ffn = FasterKanFeedForward(hidden_dim=16, fkan_num_grids=4, dropout=0.0)
+    inp = torch.randn(2, 16)
+    assert ffn(inp).shape == (2, 16)
+
+
+# One task path drives all registered models.
 
 
 def _task_smoke(model_name: str) -> None:
@@ -292,6 +376,10 @@ def test_rnntask_smoke_mlp_rnn() -> None:
 
 def test_rnntask_smoke_rkan_rnn() -> None:
     _task_smoke("rkan_rnn")
+
+
+def test_rnntask_smoke_faster_kan_rnn() -> None:
+    _task_smoke("faster_kan_rnn")
 
 
 def test_rnntask_smoke_m2rnn() -> None:
@@ -358,6 +446,51 @@ def test_rkan_rnn_step_rollout_matches_forward() -> None:
     """Autoregressive step() rollout must equal forward() for rKAN-RNN."""
     model = get_model(
         "rkan_rnn",
+        input_dim=32,
+        hidden_dim=32,
+        num_layers=1,
+        num_heads=2,
+        dropout=0.0,
+        num_classes=2,
+    )
+    x = torch.randn(2, 6, 32)
+    state = model.init_state(2, x.device)
+    logits, _ = model(x, state)
+
+    step_logits = []
+    step_state = model.init_state(2, x.device)
+    for t in range(6):
+        out_t, step_state = model.step(x[:, t, :], step_state)
+        step_logits.append(out_t)
+    rollout = torch.stack(step_logits, dim=1)
+    assert torch.allclose(logits, rollout, atol=1e-5)
+
+
+def test_faster_kan_rnn_uses_faster_kan_heads() -> None:
+    """FasterKan-RNN recurrence heads must be FasterKAN, not MLP."""
+    from nonlinearrnnscanbeparallel.models.faster_kan import FasterKANHead
+    from nonlinearrnnscanbeparallel.models.mlp_rnn import MLPHead
+
+    model = get_model(
+        "faster_kan_rnn",
+        input_dim=32,
+        hidden_dim=32,
+        num_layers=1,
+        num_heads=2,
+        dropout=0.0,
+        num_classes=2,
+    )
+    for layer_pair in model.layers:
+        rnn_layer, _ = layer_pair
+        for head in rnn_layer.heads:
+            assert isinstance(head, FasterKANHead)
+            assert not isinstance(head, MLPHead)
+
+
+def test_faster_kan_rnn_step_rollout_matches_forward() -> None:
+    """Autoregressive step() rollout must equal forward() for FasterKan-RNN."""
+    model = get_model(
+        "faster_kan_rnn",
         input_dim=32,
         hidden_dim=32,
         num_layers=1,

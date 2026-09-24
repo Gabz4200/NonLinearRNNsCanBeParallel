@@ -36,6 +36,7 @@ import torch
 from torch import nn
 
 from .base import BaseRNNModel, RMSNorm, RNNState, RNNStateList
+from .faster_kan import FasterKanFeedForward, FasterKANHead
 from .m2rnn import DEFAULT_KEY_DIM, DEFAULT_VALUE_DIM, M2RNNLayer
 from .min_gru import MinGRULayer
 from .min_lstm import MinLSTMLayer
@@ -43,7 +44,7 @@ from .mlp_rnn import FeedForwardSublayer, MultiHeadRNNLayer, make_mlp_heads
 from .registry import register_model
 from .rkan import RationalFeedForward, RKANHead
 
-MIXER_TYPES = ("mlp", "rkan", "min_gru", "min_lstm", "m2rnn")
+MIXER_TYPES = ("mlp", "rkan", "faster_kan", "min_gru", "min_lstm", "m2rnn")
 
 
 def _build_mlp_mixer(
@@ -82,6 +83,26 @@ def _build_rkan_mixer(
     )
 
 
+def _build_faster_kan_mixer(
+    hidden_dim: int, num_heads: int, dropout: float, kw: dict[str, Any]
+) -> nn.Module:
+    return MultiHeadRNNLayer(
+        hidden_dim,
+        num_heads,
+        head_factory=functools.partial(
+            FasterKANHead,
+            fkan_grid_min=float(kw.get("fkan_grid_min", -1.2)),
+            fkan_grid_max=float(kw.get("fkan_grid_max", 0.2)),
+            fkan_num_grids=int(kw.get("fkan_num_grids", 8)),
+            fkan_inv_denominator=float(kw.get("fkan_inv_denominator", 0.5)),
+            fkan_train_grid=bool(kw.get("fkan_train_grid", False)),
+            fkan_train_inv_denominator=bool(kw.get("fkan_train_inv_denominator", False)),
+            fkan_spline_weight_init_scale=float(kw.get("fkan_spline_weight_init_scale", 0.1)),
+        ),
+        dropout=dropout,
+    )
+
+
 def _build_min_gru_mixer(
     hidden_dim: int, num_heads: int, dropout: float, kw: dict[str, Any]
 ) -> nn.Module:
@@ -109,6 +130,7 @@ def _build_m2rnn_mixer(
 MIXER_BUILDERS = {
     "mlp": _build_mlp_mixer,
     "rkan": _build_rkan_mixer,
+    "faster_kan": _build_faster_kan_mixer,
     "min_gru": _build_min_gru_mixer,
     "min_lstm": _build_min_lstm_mixer,
     "m2rnn": _build_m2rnn_mixer,
@@ -135,9 +157,12 @@ def _build_ff_layer(
     mlp_hidden_mult: int,
     dropout: float,
     rkan_kwargs: dict[str, Any],
+    fkan_kwargs: dict[str, Any],
 ) -> nn.Module:
     if ff_type == "rkan":
         return RationalFeedForward(hidden_dim, dropout=dropout, **rkan_kwargs)
+    if ff_type == "faster_kan":
+        return FasterKanFeedForward(hidden_dim, dropout=dropout, **fkan_kwargs)
     if ff_type == "mlp":
         return FeedForwardSublayer(hidden_dim, mlp_hidden_mult, dropout)
     raise ValueError(f"Unknown ff_type: {ff_type}")
@@ -161,10 +186,10 @@ class NanoRNN(BaseRNNModel):
         num_heads: int = 12,
         dropout: float = 0.0,
         vocab_size: int = 50257,
-        mixer_type: str = "min_gru",
+        mixer_type: str = "faster_kan",
         mlp_hidden_mult: int = 4,
         mlp_num_layers: int = 2,
-        ff_type: str = "mlp",
+        ff_type: str = "faster_kan",
         tie_embeddings: bool = True,
         use_pos_emb: bool = False,
         max_seq_len: int = 1024,
@@ -177,6 +202,13 @@ class NanoRNN(BaseRNNModel):
         rkan_mapping: str = "algebraic_infinite",
         rkan_type: str = "jacobi",
         rkan_num_basis: int = 4,
+        fkan_grid_min: float = -1.2,
+        fkan_grid_max: float = 0.2,
+        fkan_num_grids: int = 8,
+        fkan_inv_denominator: float = 0.5,
+        fkan_train_grid: bool = False,
+        fkan_train_inv_denominator: bool = False,
+        fkan_spline_weight_init_scale: float = 0.1,
         **kwargs: object,
     ) -> None:
         if head_dim is not None:
@@ -212,6 +244,13 @@ class NanoRNN(BaseRNNModel):
             "rkan_mapping": rkan_mapping,
             "rkan_type": rkan_type,
             "rkan_num_basis": rkan_num_basis,
+            "fkan_grid_min": fkan_grid_min,
+            "fkan_grid_max": fkan_grid_max,
+            "fkan_num_grids": fkan_num_grids,
+            "fkan_inv_denominator": fkan_inv_denominator,
+            "fkan_train_grid": fkan_train_grid,
+            "fkan_train_inv_denominator": fkan_train_inv_denominator,
+            "fkan_spline_weight_init_scale": fkan_spline_weight_init_scale,
         }
         rkan_kwargs: dict[str, Any] = {
             "rkan_degree": rkan_degree,
@@ -221,6 +260,15 @@ class NanoRNN(BaseRNNModel):
             "rkan_mapping": rkan_mapping,
             "rkan_type": rkan_type,
             "rkan_num_basis": rkan_num_basis,
+        }
+        fkan_kwargs: dict[str, Any] = {
+            "fkan_grid_min": fkan_grid_min,
+            "fkan_grid_max": fkan_grid_max,
+            "fkan_num_grids": fkan_num_grids,
+            "fkan_inv_denominator": fkan_inv_denominator,
+            "fkan_train_grid": fkan_train_grid,
+            "fkan_train_inv_denominator": fkan_train_inv_denominator,
+            "fkan_spline_weight_init_scale": fkan_spline_weight_init_scale,
         }
 
         self.wte = nn.Embedding(vocab_size, hidden_dim)
@@ -236,7 +284,9 @@ class NanoRNN(BaseRNNModel):
                         build_mixer_layer(
                             mixer_type, hidden_dim, num_heads, dropout, **mixer_kwargs
                         ),
-                        _build_ff_layer(ff_type, hidden_dim, mlp_hidden_mult, dropout, rkan_kwargs),
+                        _build_ff_layer(
+                            ff_type, hidden_dim, mlp_hidden_mult, dropout, rkan_kwargs, fkan_kwargs
+                        ),
                     ]
                 )
                 for _ in range(num_layers)
@@ -270,6 +320,9 @@ class NanoRNN(BaseRNNModel):
                 nn.init.normal_(down.weight, mean=0.0, std=0.02 * scale)
             # Stacked head params are not nn submodules, so init their Linear
             # weights via the meta skeleton's structure (GPT-2 N(0, 0.02)).
+            # Only the MLP heads want this; KAN heads carry their own init.
+            if self.mixer_type != "mlp":
+                continue
             heads = getattr(mixer, "heads", None)
             if heads:
                 for name, module in heads[0].named_modules():

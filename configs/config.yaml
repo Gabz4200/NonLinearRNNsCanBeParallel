@@ -8,7 +8,7 @@ defaults:
 # Task type: sorted_graph_connectivity | ustcon | long_sequence
 task: sorted_graph_connectivity
 
-# Models in the run: mlp_rnn | rkan_rnn | m2rnn | min_gru | min_lstm
+# Models in the run: mlp_rnn | faster_kan_rnn | m2rnn | min_gru | min_lstm
 models:
   - mlp_rnn
 

@@ -315,6 +315,7 @@ def test_parallel_wrapper_target_types() -> None:
     for model_name, target_type in [
         ("mlp_rnn", "mlp"),
         ("rkan_rnn", "rkan"),
+        ("faster_kan_rnn", "faster_kan_rnn"),
         ("min_gru", "mlp"),
         ("min_lstm", "mlp"),
     ]:

@@ -7,10 +7,10 @@ defaults:
 
 task: ustcon
 
-# Models in the comparison: mlp_rnn | rkan_rnn | m2rnn | min_gru | min_lstm
+# Models in the comparison: mlp_rnn | faster_kan_rnn | m2rnn | min_gru | min_lstm
 models:
   - mlp_rnn
-  - rkan_rnn
+  - faster_kan_rnn
   - m2rnn
 
 # Training modes to run: parallel | bptt (one or both)

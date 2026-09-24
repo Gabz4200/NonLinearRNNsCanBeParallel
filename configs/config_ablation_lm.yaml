@@ -1,5 +1,5 @@
 defaults:
-  - model: nano_rkan_tiny
+  - model: nano_faster_kan_tiny
   - data_openthoughts_tiny
   - trainer_lm
   - parallel

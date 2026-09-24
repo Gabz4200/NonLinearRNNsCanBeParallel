@@ -41,10 +41,11 @@ def main(cfg: DictConfig) -> None:
 
     def cell_type() -> str:
         if name == "nano_rnn":
-            return str(model_cfg.get("mixer_type", "min_gru"))
+            return str(model_cfg.get("mixer_type", "faster_kan"))
         return {
             "mlp_rnn": "mlp",
             "rkan_rnn": "rkan",
+            "faster_kan_rnn": "faster_kan",
             "m2rnn": "m2rnn",
             "min_gru": "min_gru",
             "min_lstm": "min_lstm",

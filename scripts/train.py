@@ -15,7 +15,7 @@ Usage:
   python scripts/train.py --config-name config_long_sequence modes=[parallel]
 
   # single model / single mode
-  python scripts/train.py --config-name config_ustcon models=[rkan_rnn] modes=[bptt]
+  python scripts/train.py --config-name config_ustcon models=[faster_kan_rnn] modes=[bptt]
 
   # scale down for a quick run; adjust any hyperparam by dotted overrides
   python scripts/train.py --config-name config_ustcon \
@@ -83,6 +83,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 _CELL_TYPE = {
     "mlp_rnn": "mlp",
     "rkan_rnn": "rkan",
+    "faster_kan_rnn": "faster_kan",
     "m2rnn": "m2rnn",
     "min_gru": "min_gru",
     "min_lstm": "min_lstm",
@@ -96,7 +97,7 @@ def _cell_type(model_name: str, model_cfg: dict[str, Any]) -> str:
     their cell type via ``_CELL_TYPE``.
     """
     if model_name == "nano_rnn":
-        return str(model_cfg.get("mixer_type", "min_gru"))
+        return str(model_cfg.get("mixer_type", "faster_kan"))
     explicit = model_cfg.get("target_type")
     if explicit is not None:
         return str(explicit)
@@ -410,9 +411,17 @@ def main(cfg: DictConfig) -> None:
 
     all_results: list[dict[str, Any]] = []
     curves_by_run: list[dict[str, Any]] = []
+    # BPTT ignores the scaffold, so run it once per (mode, model) instead of
+    # once per scaffold option.
+    bptt_seen: set[tuple[str, str]] = set()
     for scaffold in scaffold_types:
         for mode in modes:
             for model_name in models:
+                if mode == "bptt":
+                    key = (mode, model_name)
+                    if key in bptt_seen:
+                        continue
+                    bptt_seen.add(key)
                 print(
                     f"\n>>> training {model_name} [{mode.upper()}] "
                     f"scaffold=[{scaffold}] on {task_name}"

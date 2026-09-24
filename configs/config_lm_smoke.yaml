@@ -1,5 +1,5 @@
 defaults:
-  - model: nano_rkan_smoke
+  - model: nano_faster_kan_smoke
   - parallel
   - _self_
 
