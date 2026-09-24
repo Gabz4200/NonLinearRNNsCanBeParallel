@@ -58,6 +58,7 @@ from nonlinearrnnscanbeparallel.data.graph_reachability import (
     GraphReachabilityDataModule,
 )
 from nonlinearrnnscanbeparallel.data.long_sequence import LongSequenceLMDataModule
+from nonlinearrnnscanbeparallel.data.mixed_lm import MixedLMDataModule
 from nonlinearrnnscanbeparallel.data.openthoughts_lm import OpenThoughtsLMDataModule
 from nonlinearrnnscanbeparallel.data.wikipedia_lm import WikipediaLMDataModule
 from nonlinearrnnscanbeparallel.models.nano_rnn import NanoRNN
@@ -114,6 +115,8 @@ def _build_datamodule(task: str, data_cfg: dict[str, Any]) -> pl.LightningDataMo
     if task == "wikipedia_lm":
         data_cfg.pop("task", None)
         return WikipediaLMDataModule(data_cfg)
+    if task == "mixed_lm":
+        return MixedLMDataModule(data_cfg)
     return GraphConnectivityDataModule(data_cfg)
 
 
@@ -162,6 +165,7 @@ def _build_task(
     parallel_cfg: dict,
     total_steps: int,
     target: torch.nn.Module,
+    scaffold: str | None = None,
 ) -> tuple[pl.LightningModule, Callback | None, float]:
     target_type = _cell_type(model_name, model_cfg)
     spec = {**model_cfg, "name": model_name, "total_steps": total_steps}
@@ -174,7 +178,7 @@ def _build_task(
             target_type=target_type,
             detach_boundary=bool(parallel_cfg.get("detach_boundary", False)),
             use_gdn2_init=bool(parallel_cfg.get("use_gdn2_init", True)),
-            scaffold_type=str(parallel_cfg.get("scaffold_type", "min_gru")),
+            scaffold_type=scaffold or str(parallel_cfg.get("scaffold_type", "min_gru")),
             scaffold_num_layers=int(parallel_cfg.get("scaffold_num_layers", 1)),
             scaffold_positional=bool(parallel_cfg.get("scaffold_positional", True)),
             translator_type=(
@@ -213,7 +217,7 @@ def _build_task(
             float(model_cfg.get("target_grad_clip", 1.0)),
         )
 
-    if task in ("openthoughts_lm", "wikipedia_lm"):
+    if task in ("openthoughts_lm", "wikipedia_lm", "mixed_lm"):
         if mode == "parallel":
             backbone = _parallel_backbone(1024, 256)
             return (
@@ -255,6 +259,7 @@ def _run_one(
     task_name: str,
     mode: str,
     model_name: str,
+    scaffold: str,
     cfg: DictConfig,
     results_dir: Path,
 ) -> tuple[dict[str, Any], dict[str, list[float]]]:
@@ -296,7 +301,7 @@ def _run_one(
             )
             target.resize_vocab(target_vocab)
     lit_task, clip_cb, clip_val = _build_task(
-        task_name, mode, model_name, model_cfg, parallel_cfg, total_steps, target
+        task_name, mode, model_name, model_cfg, parallel_cfg, total_steps, target, scaffold
     )
 
     trainer_cfg["gradient_clip_val"] = clip_val
@@ -322,6 +327,7 @@ def _run_one(
     result = {
         "model": model_name,
         "mode": mode,
+        "scaffold": scaffold,
         "time_seconds": elapsed,
         "trainable_params": sum(p.numel() for p in lit_task.parameters() if p.requires_grad),
         "checkpoint": best_ckpt,
@@ -345,7 +351,10 @@ def _style_log_axes(ax, xlabel: str, ylabel: str, title: str) -> None:
 
 def _plot_results(runs: list[dict[str, Any]], results_dir: Path) -> None:
     """Save per-run loss curves and a validation-loss comparison into results_dir."""
-    labeled = [(f"{r['model']} [{r['mode']}]", r["train_losses"], r["val_losses"]) for r in runs]
+    labeled = [
+        (f"{r['model']} [{r['mode']}] {r['scaffold']}", r["train_losses"], r["val_losses"])
+        for r in runs
+    ]
     if not labeled:
         return
     results_dir.mkdir(parents=True, exist_ok=True)
@@ -380,6 +389,12 @@ def main(cfg: DictConfig) -> None:
     task_name: str = cfg.get("task", "sorted_graph_connectivity")
     models: list[str] = [str(m) for m in cfg.get("models", ["mlp_rnn"])]
     modes: list[str] = [str(m) for m in (cfg.get("modes") if cfg.get("modes") else ["parallel"])]
+    parallel_node = cfg.get("parallel", {})
+    scaffold_types: list[str] = (
+        [str(s) for s in parallel_node.get("scaffold_types")]
+        if parallel_node.get("scaffold_types")
+        else [str(parallel_node.get("scaffold_type", "min_gru"))]
+    )
 
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     results_dir = PROJECT_ROOT / "results" / f"{task_name}_{timestamp}"
@@ -387,22 +402,40 @@ def main(cfg: DictConfig) -> None:
     with (results_dir / "config.yaml").open("w") as file:
         file.write(OmegaConf.to_yaml(cfg))
 
-    run_id = f"{task_name} x {','.join(models)} x {','.join(modes)}"
+    run_id = (
+        f"{task_name} x {','.join(models)} x {','.join(modes)} "
+        f"x scaffolds={','.join(scaffold_types)}"
+    )
     print(f"\n{'=' * 60}\nRUN: {run_id}\nResults: {results_dir}\n{'=' * 60}")
 
     all_results: list[dict[str, Any]] = []
     curves_by_run: list[dict[str, Any]] = []
-    for mode in modes:
-        for model_name in models:
-            print(f"\n>>> training {model_name} [{mode.upper()}] on {task_name}")
-            try:
-                result, curves = _run_one(task_name, mode, model_name, cfg, results_dir)
-                all_results.append(result)
-                curves_by_run.append({"model": model_name, "mode": mode, **curves})
-            except Exception as error:  # noqa: BLE001
-                print(f"ERROR training {model_name} [{mode}]: {error}")
-                traceback.print_exc()
-                all_results.append({"model": model_name, "mode": mode, "error": str(error)})
+    for scaffold in scaffold_types:
+        for mode in modes:
+            for model_name in models:
+                print(
+                    f"\n>>> training {model_name} [{mode.upper()}] "
+                    f"scaffold=[{scaffold}] on {task_name}"
+                )
+                try:
+                    result, curves = _run_one(
+                        task_name, mode, model_name, scaffold, cfg, results_dir
+                    )
+                    all_results.append(result)
+                    curves_by_run.append(
+                        {"model": model_name, "mode": mode, "scaffold": scaffold, **curves}
+                    )
+                except Exception as error:  # noqa: BLE001
+                    print(f"ERROR training {model_name} [{mode}] scaffold=[{scaffold}]: {error}")
+                    traceback.print_exc()
+                    all_results.append(
+                        {
+                            "model": model_name,
+                            "mode": mode,
+                            "scaffold": scaffold,
+                            "error": str(error),
+                        }
+                    )
 
     _plot_results(curves_by_run, results_dir)
     summary = {
@@ -410,6 +443,7 @@ def main(cfg: DictConfig) -> None:
         "task": task_name,
         "models": models,
         "modes": modes,
+        "scaffold_types": scaffold_types,
         "results": all_results,
     }
     with (results_dir / "summary.json").open("w") as file:
@@ -418,7 +452,10 @@ def main(cfg: DictConfig) -> None:
     print(f"\n{'=' * 60}\nSUMMARY\n{'=' * 60}")
     for result in all_results:
         if "error" in result:
-            print(f"{result['model']:10s} [{result['mode']}]: FAILED - {result['error']}")
+            print(
+                f"{result['model']:10s} [{result['mode']}] "
+                f"scaffold=[{result['scaffold']}]: FAILED - {result['error']}"
+            )
             continue
         metrics = result.get("metrics", {})
         printed = [
@@ -426,7 +463,7 @@ def main(cfg: DictConfig) -> None:
             for key, value in metrics.items()
             if isinstance(value, float) and key.startswith(("train/", "val/"))
         ]
-        row = f"{result['model']:10s} [{result['mode']}]: "
+        row = f"{result['model']:10s} [{result['mode']}] scaffold=[{result['scaffold']}]: "
         if printed:
             row += " ".join(printed)
         else:

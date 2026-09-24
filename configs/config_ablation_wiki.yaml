@@ -1,0 +1,60 @@
+defaults:
+  - model: nano_rkan_tiny
+  - trainer_lm
+  - parallel
+  - _self_
+
+# Scaffold ablation on a Wikipedia + TinyStoriesInstruct causal-LM mix: every
+# scaffold (old: min_gru, min_lstm; new: linear_sum, fourier) on one fixed
+# 4-layer nano target, parallel mode only. Batches alternate sources in
+# strict round-robin order (MixedLMDataModule). Chunk 64 divides block 256
+# (4 chunks) and is < 256//2.
+# 32 wiki articles (x ~4 blocks) + ~60 TinyStories stories -> ~30 batches/epoch;
+# ~1-3 min per scaffold on CPU, ~5-15 min total.
+task: mixed_lm
+
+models:
+  - nano_rnn
+
+modes:
+  - parallel
+
+fast_dev_run: false
+
+data:
+  block_size: 256
+  max_seq_len: 256
+  batch_size: 4
+  num_workers: 0
+  sources:
+    - name: wikipedia
+      dataset_name: "wikimedia/wikipedia"
+      subsets: ["20231101.en", "20231101.pt"]
+      dataset_split: "train"
+      articles_per_subset: 16
+      subset_seed: 42
+      max_article_tokens: 1024
+    - name: tinystories_instruct
+      dataset_name: "roneneldan/TinyStoriesInstruct"
+      dataset_split: "train"
+      subset_num_samples: 24
+      subset_seed: 42
+
+parallel:
+  chunk_size: 64
+  scaffold_dim: 64  # divisible by model.num_heads (8)
+  scaffold_types: [min_gru, min_lstm, linear_sum, fourier]
+  scaffold_positional: true
+  translator_pre_norm: true
+  translator_norm_type: rmsnorm
+
+trainer:
+  max_epochs: 2
+  precision: "32-true"
+  log_every_n_steps: 5
+  gradient_clip_val: 1.0
+  accumulate_grad_batches: 1
+
+callbacks:
+  model_checkpoint: false
+  early_stopping: false
