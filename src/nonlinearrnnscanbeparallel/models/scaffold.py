@@ -6,6 +6,8 @@ It is separate from the target RNN and discarded at inference.
 
 from __future__ import annotations
 
+import math
+
 import torch
 import torch.nn.functional as F
 from torch import nn
@@ -17,10 +19,35 @@ from .minimal import minimal_candidate, minimal_log_candidate, parallel_scan_log
 class ScaffoldBase(nn.Module):
     """Structural protocol for scaffold modules.
 
-    Any scaffold maps a layer input [B, T, D] to boundary summaries
-    [B, T, S]. Implementations vary (minGRU vs minLSTM); the wrapper
-    only depends on this forward signature.
+    Any scaffold maps a layer input [B, T, D] to prefix-summary states
+    [B, T, S]. Implementations vary (minGRU vs minLSTM vs linear_sum vs
+    fourier); the wrapper only depends on this forward signature, and
+    reads only the states at chunk-boundary indices. Contract: state t
+    must depend on inputs <= t only (causality — a boundary state seeds
+    the first step of the next chunk, and future tokens must not leak
+    into it), and each such state becomes the target RNN's initial hidden
+    state for that chunk; within a chunk the target recurrence updates
+    the state normally from step 2 onward.
     """
+
+    @staticmethod
+    def positional_encoding(
+        sequence_len: int, hidden_dim: int, device: torch.device, dtype: torch.dtype
+    ) -> torch.Tensor:
+        """Sinusoidal absolute positional encoding, length/dim agnostic.
+
+        Same construction as Fourier-Wavelet's additive "X + P" input
+        encoding (arXiv:2111.15473 Fig 1); parameter-free.
+        """
+        positions = torch.arange(sequence_len, device=device, dtype=dtype).unsqueeze(1)
+        dims = torch.arange(hidden_dim, device=device, dtype=dtype).unsqueeze(0)
+        exponent = torch.floor(dims / 2.0) * 2.0 / hidden_dim
+        inverse_freq = torch.pow(torch.full_like(dims, 10000.0), exponent)
+        angles = positions / inverse_freq
+        return torch.where(dims % 2 == 0, angles.sin(), angles.cos())
+
+    def _add_positional(self, x: torch.Tensor) -> torch.Tensor:
+        return x + self.positional_encoding(x.shape[1], x.shape[2], x.device, x.dtype).unsqueeze(0)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         raise NotImplementedError
@@ -261,12 +288,47 @@ class LinearSumScaffold(ScaffoldBase):
         return self.min_weight * total + weighted * scale.view(1, -1, 1)
 
 
+class FourierScaffold(ScaffoldBase):
+    """Causal cosine real-DFT token mixing (FNet/Fourier-Wavelet).
+
+    s_t = (2 / T) * sum_{k <= t} x_k cos(2 pi t k / T)
+
+    This is the causally masked real discrete Fourier transform of the
+    prefix (arXiv:2111.15473 Sec 3.2), i.e. FNet-style Fourier token
+    mixing (arXiv:2105.03824) made autoregressive: bit t depends only on
+    inputs <= t, so chunk-boundary summaries never leak future tokens.
+    Positional encoding is applied once at stack input (see
+    ``ScaffoldBase.positional_encoding``). Parameter-free apart from the
+    per-layer linear projection to hidden_dim; the mixing kernel is a
+    fixed cosine basis. Computed as a triangular matrix multiply
+    (DFT-matrix form): O(T^2) time and memory per scaffold layer.
+    """
+
+    def __init__(self, input_dim: int, hidden_dim: int) -> None:
+        super().__init__()
+        self.input_proj = nn.Linear(input_dim, hidden_dim, bias=False)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = self.input_proj(x)  # [B, T, D]
+        sequence_len = x.shape[1]
+        positions = torch.arange(sequence_len, device=x.device, dtype=x.dtype)
+        kernel = torch.tril(
+            torch.cos(2.0 * math.pi * torch.outer(positions, positions) / sequence_len)
+        )
+        kernel = kernel * (2.0 / sequence_len)
+        return torch.einsum("tk,bkd->btd", kernel, x)
+
+
 class ScaffoldStack(ScaffoldBase):
     """Stack of 1..N scaffold layers applied per outer RNN layer.
 
-    ``scaffold_type`` selects the cell (min_gru | min_lstm | linear_sum);
-    ``num_layers`` is unbounded (typical 1-4). ``num_layers=1``
-    reproduces the legacy single-scaffold behavior exactly.
+    ``scaffold_type`` selects the cell (min_gru | min_lstm | linear_sum
+    | fourier); ``num_layers`` is unbounded (typical 1-4). ``num_layers=1``
+    reproduces the legacy single-scaffold behavior exactly. When
+    ``positional`` is set (default), a fixed sinusoidal positional encoding
+    is added once to the stack input (Fourier-Wavelet "X + P", arXiv:2111.
+    15473 Fig 1); off is the FNet ablation (arXiv:2105.03824) where the
+    mixing kernel alone encodes position.
     """
 
     def __init__(
@@ -278,19 +340,23 @@ class ScaffoldStack(ScaffoldBase):
         num_heads: int = 4,
         dropout: float = 0.0,
         min_weight: float = 0.1,
+        positional: bool = True,
     ) -> None:
         super().__init__()
-        if scaffold_type not in ("min_gru", "min_lstm", "linear_sum"):
+        if scaffold_type not in ("min_gru", "min_lstm", "linear_sum", "fourier"):
             raise ValueError(f"Unknown scaffold_type: {scaffold_type}")
         if num_layers < 1:
             raise ValueError("scaffold num_layers must be >= 1")
         self.scaffold_type = scaffold_type
         self.num_scaffold_layers = num_layers
+        self.positional = positional
         layers: list[nn.Module] = []
         in_dim = input_dim
         for _ in range(num_layers):
             if scaffold_type == "linear_sum":
                 layers.append(LinearSumScaffold(in_dim, hidden_dim, min_weight))
+            elif scaffold_type == "fourier":
+                layers.append(FourierScaffold(in_dim, hidden_dim))
             else:
                 cell = MinGRUScaffold if scaffold_type == "min_gru" else MinLSTMScaffold
                 layers.append(cell(in_dim, hidden_dim, num_heads, dropout))
@@ -298,6 +364,8 @@ class ScaffoldStack(ScaffoldBase):
         self.layers = nn.ModuleList(layers)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if self.positional:
+            x = self._add_positional(x)
         for layer in self.layers:
             x = layer(x)
         return x

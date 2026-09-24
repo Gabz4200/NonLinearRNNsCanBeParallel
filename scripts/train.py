@@ -176,6 +176,7 @@ def _build_task(
             use_gdn2_init=bool(parallel_cfg.get("use_gdn2_init", True)),
             scaffold_type=str(parallel_cfg.get("scaffold_type", "min_gru")),
             scaffold_num_layers=int(parallel_cfg.get("scaffold_num_layers", 1)),
+            scaffold_positional=bool(parallel_cfg.get("scaffold_positional", True)),
             translator_type=(
                 str(parallel_cfg["translator_type"])
                 if parallel_cfg.get("translator_type") is not None

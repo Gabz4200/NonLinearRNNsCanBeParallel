@@ -9,7 +9,11 @@ import torch
 import nonlinearrnnscanbeparallel.models  # noqa: F401
 from nonlinearrnnscanbeparallel.models.parallel_wrapper import ParallelRNNTrainer
 from nonlinearrnnscanbeparallel.models.registry import get_model
-from nonlinearrnnscanbeparallel.models.scaffold import LinearSumScaffold, ScaffoldStack
+from nonlinearrnnscanbeparallel.models.scaffold import (
+    FourierScaffold,
+    LinearSumScaffold,
+    ScaffoldStack,
+)
 from nonlinearrnnscanbeparallel.tasks.language_modeling import BPTTLMTask, LMLightningTask
 
 
@@ -60,6 +64,39 @@ def test_when_linear_sum_scaffold_training_step_then_finite_loss() -> None:
     assert torch.isfinite(loss)
     first_scaffold = cast(ScaffoldStack, wrapper.scaffolds[0])
     assert isinstance(first_scaffold.layers[0], LinearSumScaffold)
+
+
+def test_when_fourier_scaffold_training_step_then_finite_loss() -> None:
+    spec = {"vocab_size": 64, "hidden_dim": 32, "bptt_max_seq_len": 12, "total_steps": 10}
+    wrapper = ParallelRNNTrainer(
+        _nano(), chunk_size=4, scaffold_dim=16, scaffold_type="fourier", dropout=0.0
+    )
+    parallel = LMLightningTask(spec, wrapper)
+    parallel.train()
+    loss = parallel.training_step(_batch(), 0)
+    assert torch.isfinite(loss)
+    first_scaffold = cast(ScaffoldStack, wrapper.scaffolds[0])
+    assert isinstance(first_scaffold.layers[0], FourierScaffold)
+    assert first_scaffold.positional is True
+
+
+def test_when_boundary_states_causal_then_suffix_perturbation_leaves_prefix_boundaries() -> None:
+    wrapper = ParallelRNNTrainer(
+        _nano(), chunk_size=4, scaffold_dim=16, scaffold_type="fourier", dropout=0.0
+    )
+    x = torch.randn(2, 12, 32)
+    reference = wrapper.get_boundary_states(x)
+    perturbed_input = x.clone()
+    perturbed_input[:, 8:, :] += 100.0  # only the last chunk's interior
+    assert len(reference) == 2  # one per layer
+    for layer_output, perturbed_output in zip(
+        reference, wrapper.get_boundary_states(perturbed_input), strict=True
+    ):
+        # Boundary indices for chunk_size=4, T=12 are 3 and 7; neither may
+        # move when tokens >= 8 change, since chunk starts seed only from
+        # the preceding boundary state.
+        torch.testing.assert_close(layer_output, perturbed_output)
+    assert layer_output.shape == (2, 2, 32)  # [B, M-1, hidden_dim] translated
 
 
 def test_when_bptt_and_parallel_training_step_then_finite_loss() -> None:

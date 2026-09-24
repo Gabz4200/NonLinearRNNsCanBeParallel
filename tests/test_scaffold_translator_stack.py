@@ -7,6 +7,7 @@ import torch
 
 from nonlinearrnnscanbeparallel.models.base import RMSNorm
 from nonlinearrnnscanbeparallel.models.scaffold import (
+    FourierScaffold,
     LinearSumScaffold,
     MinGRUScaffold,
     MinLSTMScaffold,
@@ -17,12 +18,52 @@ from nonlinearrnnscanbeparallel.models.translator import TranslatorLayer, Transl
 
 def test_when_scaffold_stack_depth_one_then_shape_matches_legacy() -> None:
     stack = ScaffoldStack(
-        scaffold_type="min_gru", input_dim=16, hidden_dim=8, num_layers=1, num_heads=2, dropout=0.0
+        scaffold_type="min_gru",
+        input_dim=16,
+        hidden_dim=8,
+        num_layers=1,
+        num_heads=2,
+        dropout=0.0,
+        positional=False,
     )
     legacy = MinGRUScaffold(input_dim=16, hidden_dim=8, num_heads=2, dropout=0.0)
     stack.layers[0].load_state_dict(legacy.state_dict())
     x = torch.randn(2, 6, 16)
     torch.testing.assert_close(stack(x), legacy(x))
+
+
+def test_when_scaffold_positional_default_then_stack_adds_pe() -> None:
+    pe_on = ScaffoldStack(scaffold_type="linear_sum", input_dim=16, hidden_dim=8, num_layers=1)
+    pe_off = ScaffoldStack(
+        scaffold_type="linear_sum", input_dim=16, hidden_dim=8, num_layers=1, positional=False
+    )
+    pe_off.layers[0].load_state_dict(pe_on.layers[0].state_dict())
+    x = torch.randn(2, 6, 16)
+    assert pe_on.positional is True
+    assert not torch.allclose(pe_on(x), pe_off(x))
+
+
+def test_when_fourier_scaffold_then_output_shape_and_backward() -> None:
+    scaffold = FourierScaffold(input_dim=16, hidden_dim=8)
+    x = torch.randn(2, 6, 16, requires_grad=True)
+    out = scaffold(x)
+    assert out.shape == (2, 6, 8)
+    out.sum().backward()
+    assert x.grad is not None
+    assert scaffold.input_proj.weight.grad is not None
+
+
+def test_when_fourier_scaffold_is_causal_then_future_perturbation_does_not_change_prefix() -> None:
+    scaffold = FourierScaffold(input_dim=16, hidden_dim=8)
+    scaffold.eval()
+    x = torch.randn(2, 6, 16)
+    with torch.no_grad():
+        baseline = scaffold(x)
+        perturbed = x.clone()
+        perturbed[:, 4:, :] += 100.0  # change future rows only
+        changed = scaffold(perturbed)
+    torch.testing.assert_close(baseline[:, :4, :], changed[:, :4, :])
+    assert not torch.allclose(baseline[:, 4:, :], changed[:, 4:, :])
 
 
 def test_when_min_lstm_scaffold_then_output_shape() -> None:

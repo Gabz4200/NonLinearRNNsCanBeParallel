@@ -159,6 +159,7 @@ class ParallelRNNTrainer(nn.Module):
         output_head: Callable[[torch.Tensor], torch.Tensor] | None = None,
         scaffold_type: str = "min_gru",
         scaffold_num_layers: int = 1,
+        scaffold_positional: bool = True,
         translator_type: str | None = None,
         translator_num_layers: int = 1,
         translator_pre_norm: bool = True,
@@ -168,8 +169,10 @@ class ParallelRNNTrainer(nn.Module):
         target_rnn: target RNN with ``layers`` as [rnn, ff] pairs.
         target_type: deprecated legacy selector for the m2rnn code path
             and default translator. Prefer explicit scaffold/translator keys.
-        scaffold_type: min_gru | min_lstm | linear_sum.
+        scaffold_type: min_gru | min_lstm | linear_sum | fourier.
         scaffold_num_layers: stacked scaffold layers per outer layer (1..N).
+        scaffold_positional: add sinusoidal positional encoding to scaffold
+            input (Fourier-Wavelet "X + P"); off is the FNet no-PE ablation.
         translator_type: mlp | rkan, or None to resolve from target_type.
         translator_num_layers: stacked translator layers per outer layer (1..N).
         translator_pre_norm: pre-normalize translator input (default True).
@@ -219,6 +222,7 @@ class ParallelRNNTrainer(nn.Module):
                     num_layers=scaffold_num_layers,
                     num_heads=num_heads,
                     dropout=dropout,
+                    positional=scaffold_positional,
                 )
                 for _ in range(num_layers)
             ]
