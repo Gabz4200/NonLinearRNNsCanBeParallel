@@ -68,7 +68,7 @@ class MixedLMDataModule(pl.LightningDataModule):
         cfg = dict(data_config or {})
         self._batch_size = cfg.get("batch_size", 8)
         self._num_workers = cfg.get("num_workers", 0)
-        self._shared = {key: cfg.get(key) for key in _SHARED_KEYS}
+        self._shared = {key: value for key in _SHARED_KEYS if (value := cfg.get(key)) is not None}
 
         self._sources: list[tuple[str, dict[str, Any]]] = []
         for source in cfg.get("sources", []):
@@ -97,8 +97,8 @@ class MixedLMDataModule(pl.LightningDataModule):
             if factory is None:
                 raise ValueError(f"Unknown mixed source: {name}")
             base = {k: v for k, v in source_cfg.items() if k != "name"}
-            for key in _SHARED_KEYS:
-                base.setdefault(key, self._shared.get(key))
+            for key, value in self._shared.items():
+                base.setdefault(key, value)
             module = factory(base)
             module.setup("fit")
             self._modules.append(module)

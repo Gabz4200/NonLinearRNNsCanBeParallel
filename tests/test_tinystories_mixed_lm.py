@@ -108,3 +108,31 @@ def test_when_tiny_module_collate_then_padded_batch(monkeypatch: pytest.MonkeyPa
     assert batch["input_ids"].shape[1] == expect_cols
     assert batch["labels"].shape == batch["input_ids"].shape
     assert (batch["labels"][batch["attention_mask"] == 0] == -100).all()
+
+
+def test_when_top_level_omits_shared_keys_then_source_defaults_kept(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from nonlinearrnnscanbeparallel.data import mixed_lm
+
+    captured: dict[str, Any] = {}
+
+    class _FakeSource:
+        def __init__(self, data_config: dict[str, Any]) -> None:
+            captured.update(data_config)
+            self.train_dataset = _StubDataset([1, 2])
+            self.val_dataset = _StubDataset([1])
+            self.test_dataset = _StubDataset([1])
+            self.tokenizer = _FakeTokenizer()
+
+        def setup(self, stage: str | None = None) -> None:
+            pass
+
+    monkeypatch.setattr(mixed_lm, "_SOURCE_FACTORIES", {"wikipedia": _FakeSource})
+    module = mixed_lm.MixedLMDataModule(
+        {"batch_size": 2, "sources": [{"name": "wikipedia", "articles_per_subset": 4}]}
+    )
+    module.setup("fit")
+    assert "tokenizer_name" not in captured
+    assert "block_size" not in captured
+    assert captured["articles_per_subset"] == 4

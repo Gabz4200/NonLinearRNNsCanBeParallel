@@ -145,8 +145,13 @@ class WikipediaLMDataModule(pl.LightningDataModule):
         rng = default_rng(cfg.subset_seed)
         indices = rng.permutation(len(articles))
         n_total = len(indices)
-        n_test = int(n_total * cfg.test_split)
-        n_val = int(n_total * cfg.val_split)
+        # floor(frac * n) gives 0 for small slices, so guarantee at least one
+        # val and one test article; raise only when no training articles would
+        # remain.
+        n_test = max(1, int(n_total * cfg.test_split))
+        n_val = max(1, int(n_total * cfg.val_split))
+        if n_test + n_val >= n_total:
+            raise ValueError(f"not enough articles ({n_total}) for a nonempty train/val/test split")
 
         test_idx = set(indices[:n_test].tolist())
         val_idx = set(indices[n_test : n_test + n_val].tolist())

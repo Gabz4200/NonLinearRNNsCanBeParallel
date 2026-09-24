@@ -147,11 +147,14 @@ class TinyStoriesInstructDataModule(pl.LightningDataModule):
         stories = self._all_stories(self._load_rows())
         rng = default_rng(cfg.subset_seed)
         indices = rng.permutation(len(stories))
-        n_test = int(len(stories) * cfg.test_split)
-        n_val = int(len(stories) * cfg.val_split)
-        if n_val == 0 or n_test == 0:
+        # floor(frac * n) gives 0 for small slices, so guarantee at least one
+        # val and one test item; raise only when no training items would remain.
+        n_test = max(1, int(len(stories) * cfg.test_split))
+        n_val = max(1, int(len(stories) * cfg.val_split))
+        if n_test + n_val >= len(stories):
             raise ValueError(
-                f"split sizes too small for {len(stories)} stories; raise subset_num_samples"
+                f"not enough stories ({len(stories)}) for a nonempty train/val/test split; "
+                "raise subset_num_samples"
             )
 
         test_idx = set(indices[:n_test].tolist())
