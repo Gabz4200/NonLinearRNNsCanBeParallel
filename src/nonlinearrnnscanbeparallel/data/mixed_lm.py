@@ -57,7 +57,7 @@ class MixedLMDataset(Dataset):
         return self.per_source * self.n
 
     def __getitem__(self, index: int) -> dict[str, torch.Tensor]:
-        return self.sources[index % self.n].__getitem__(index // self.n)
+        return self.sources[index % self.n][index // self.n]
 
 
 class MixedLMDataModule(pl.LightningDataModule):

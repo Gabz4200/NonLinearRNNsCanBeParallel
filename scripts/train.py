@@ -35,7 +35,7 @@ import time
 import traceback
 from datetime import datetime
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 import matplotlib
 
@@ -310,7 +310,7 @@ def _run_one(
     metric_cb = MetricsCallback()
     extra = [cb for cb in (clip_cb, metric_cb) if cb is not None]
     if extra:
-        cast(Any, trainer).callbacks.extend(extra)
+        trainer.callbacks.extend(extra)
 
     start = time.time()
     trainer.fit(lit_task, datamodule=datamodule)
@@ -318,11 +318,7 @@ def _run_one(
 
     metrics = {k: float(v) for k, v in trainer.callback_metrics.items()}
     best_ckpt = next(
-        (
-            cb.best_model_path
-            for cb in cast(Any, trainer).callbacks
-            if isinstance(cb, ModelCheckpoint)
-        ),
+        (cb.best_model_path for cb in trainer.callbacks if isinstance(cb, ModelCheckpoint)),
         "",
     )
     result = {

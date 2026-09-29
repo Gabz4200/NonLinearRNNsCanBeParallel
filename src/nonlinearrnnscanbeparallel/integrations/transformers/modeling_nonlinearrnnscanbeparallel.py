@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import torch
 from torch import nn
-from transformers import BaseModelOutput, PreTrainedModel
+from transformers import PreTrainedModel
+from transformers.modeling_outputs import BaseModelOutput
 
 from nonlinearrnnscanbeparallel.models.registry import get_model
 

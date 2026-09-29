@@ -23,7 +23,6 @@ from torch.utils.data import DataLoader, Dataset
 from transformers import AutoTokenizer, PreTrainedTokenizerBase
 
 FALLBACK_KEYS = ["question", "reasoning"]
-ANSWER_KEYS = ["answer", "answer_or_no_answer"]
 
 
 @dataclass

@@ -189,10 +189,9 @@ class RationalMapping(nn.Module):
             "logarithmic_infinite": lambda: torch.tanh(x / iota),
             "algebraic_infinite": lambda: x / torch.sqrt(x * x + iota * iota),
         }
-        try:
-            return mappings[self.mapping_type]()
-        except KeyError:
-            raise ValueError(f"Unknown mapping type: {self.mapping_type}") from None
+        if self.mapping_type not in mappings:
+            raise ValueError(f"Unknown mapping type: {self.mapping_type}")
+        return mappings[self.mapping_type]()
 
 
 class RKANLayer(nn.Module):

@@ -34,14 +34,6 @@ class RNNStateList:
         return iter(self.states)
 
 
-@dataclass
-class RNNOutput:
-    """Structured output from RNN forward pass."""
-
-    logits: torch.Tensor  # [B, T, C] or [B, C] for step
-    states: RNNStateList
-
-
 class BaseRNNModel(nn.Module, ABC):
     """Base class for RNN models. Returns latents only; no loss computation.
 
@@ -160,7 +152,11 @@ def chunked_forward_bptt(
     state: RNNStateList | None,
     chunk: int,
 ) -> tuple[torch.Tensor, RNNStateList | None]:
-    """Run ``forward_fn`` in chunks, detaching hidden state (and extra) between chunks."""
+    """Run ``forward_fn`` in chunks, detaching hidden state (and extra) between chunks.
+
+    Detaching truncates gradients across chunks by design (truncated BPTT);
+    parity analysis against full-sequence BPTT must account for it.
+    """
     _, sequence_len = input_ids.shape
     if chunk <= 0 or sequence_len <= chunk:
         return forward_fn(input_ids, state)
