@@ -1,0 +1,63 @@
+defaults:
+  - model: nano_faster_kan_tiny
+  - trainer_lm
+  - parallel
+  - _self_
+
+# Scaled mixed-LM run: nano_rnn mixer=faster_kan, scaffold=min_gru (ablation winner).
+# Capacity bump: 4 -> 6 layers (~96M -> ~130M params), same hidden 512 / 8 grids.
+# Data scaled ~20x over the ablation (80 wiki articles x EN+PT at up to 4k tokens
+# + 120 stories, 3 epochs, parallel-only (parity already proven).
+# Est. ~2170 steps: ~13h total on CPU.
+task: mixed_lm
+
+models:
+  - nano_rnn
+
+modes:
+  - parallel
+
+fast_dev_run: false
+
+# Capacity bump over nano_faster_kan_tiny: 6 layers instead of 4.
+# Everything else (hidden 512, 8 heads, 8 grids, faster_kan mixer+FF) unchanged.
+model:
+  num_layers: 6
+
+data:
+  block_size: 256
+  max_seq_len: 256
+  batch_size: 4
+  num_workers: 0
+  sources:
+    - name: wikipedia
+      dataset_name: "wikimedia/wikipedia"
+      subsets: ["20231101.en", "20231101.pt"]
+      dataset_split: "train"
+      articles_per_subset: 80
+      subset_seed: 42
+      max_article_tokens: 4096
+    - name: tinystories_instruct
+      dataset_name: "roneneldan/TinyStoriesInstruct"
+      dataset_split: "train"
+      subset_num_samples: 120
+      subset_seed: 42
+
+parallel:
+  chunk_size: 64
+  scaffold_dim: 64 # divisible by model.num_heads (8)
+  scaffold_types: [min_gru]
+  scaffold_positional: true
+  translator_pre_norm: true
+  translator_norm_type: rmsnorm
+
+trainer:
+  max_epochs: 3
+  precision: "32-true"
+  log_every_n_steps: 10
+  gradient_clip_val: 1.0
+  accumulate_grad_batches: 1
+
+callbacks:
+  model_checkpoint: true
+  early_stopping: true
