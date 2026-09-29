@@ -1,3 +1,5 @@
+fail_fast: true
+
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v4.6.0
@@ -7,8 +9,38 @@ repos:
       - id: check-yaml
       - id: check-added-large-files
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.6.9
+    rev: v0.6.9 # pinned: bumping rewrites unrelated files (see AGENTS.md Pre-commit)
     hooks:
       - id: ruff
         args: [--fix]
       - id: ruff-format
+  - repo: https://github.com/mwouts/jupytext
+    rev: v1.15.2
+    hooks:
+      - id: jupytext
+        args: [--sync, --pre-commit]
+        pass_filenames: false
+  # No pyrefly hook: `pyrefly check` exits 1 on the ~14 pre-existing baseline
+  # errors, which would block every commit. Add it once the baseline is zero.
+  - repo: https://github.com/christophmeissner/pytest-pre-commit
+    rev: 1.0.0
+    hooks:
+      - id: pytest
+        name: pytest suite
+        # Run with the project env (plugins + package installed) via uv.
+        entry: uv run --no-sync pytest -q
+        language: system
+        pass_filenames: false
+        always_run: true
+  - repo: https://github.com/scanaislop/aislop
+    rev: v0.16.1
+    hooks:
+      - id: aislop
+  - repo: local
+    hooks:
+      - id: kaggle-dataset-upload
+        name: kaggle dataset upload
+        entry: uv run --no-sync python scripts/pre_commit_kaggle_upload.py
+        language: system
+        pass_filenames: false
+        always_run: true

@@ -49,6 +49,7 @@ notebooks = [
     "jupytext>=1.15.1,<1.16.0",
     "ipykernel>=6.29.0",
     "nbconvert>=7.16.0",
+    "kagglehub>=1.0.0",
 ]
 
 [tool.uv]

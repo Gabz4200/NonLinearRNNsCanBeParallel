@@ -6,7 +6,7 @@ Research codebase for **Nonlinear RNNs Can Be Parallel** (arXiv:2603.03612): tra
 
 - **Stack**: Python 3.11+ (pinned `3.13.14`, upper bound `<3.14`), PyTorch 2.6, Lightning 2.3, Hydra/OmegaConf, Hugging Face `transformers`/`datasets`, uv, ruff, pyrefly, pytest.
 - **Layout**: `src/nonlinearrnnscanbeparallel/` (models, data, tasks, losses, training, integrations), `configs/` (Hydra), `scripts/` (train/eval/export), `tests/`, `notebooks/` (jupytext `py:percent`), `results/` (run artifacts).
-- **No monorepo, no CI workflows** (`.github/` absent). Pre-commit runs ruff + basic file hooks.
+- **No monorepo, no CI workflows** (`.github/` absent). Pre-commit runs file hygiene, ruff, jupytext, pytest, aislop, then the Kaggle dataset upload.
 
 Human-facing docs live in `README.md`. This file is only what agents need to work here.
 
@@ -65,16 +65,27 @@ aislop scan .
 - `aislop scan .` uses the global `aislop` binary (not a project dependency). Fix errors and fixable warnings; don't edit `.aislop/` config without user consent.
 - **Known baseline**: `ruff check` currently reports ~34 pre-existing N806/N812/N803 findings (ML shape unpacking `B, T, D` and `import torch.nn.functional as F` vs pep8-naming), and `pyrefly check` reports ~14 pre-existing errors. Do not mass-rename unrelated code to silence them. Fix findings in code you touch; introduce no new ones.
 
-### Pre-commit
+### Pre-commit (`fail_fast: true` — first failing hook skips the rest)
 
 ```bash
 uv run pre-commit install
-uv run pre-commit run --all-files
+SKIP=kaggle-dataset-upload uv run pre-commit run --all-files  # no Kaggle side effect
 ```
 
-Hooks: trailing whitespace, EOF, yaml check, large files, `ruff --fix`, `ruff-format`.
+Hooks in order: file hygiene (whitespace, EOF, yaml, large files) → `ruff --fix` + `ruff-format` → jupytext `--sync --pre-commit` → pytest suite (`uv run --no-sync pytest -q`, ~3 min) → aislop → kaggle-dataset-upload (last; uploads the repo as `gabrielsamaral/nonlinear-rnns-can-be-parallel`, exits 0 without creds).
 
-- **Known**: `pre-commit run --all-files` currently fails — pinned hook ruff `v0.6.9` differs from project ruff `0.16.7` (e.g. flags `UP038`, reformats some asserts). Prefer the Quality gates commands above for delivery; only chase pre-commit failures you introduce.
+- **Known**: ruff hook stays pinned at `v0.6.9` (differs from project ruff `0.16.7`) — do not bump it, that rewrites unrelated files. Only chase pre-commit failures you introduce; revert unrelated churn.
+- No pyrefly hook: `pyrefly check` exits 1 on the ~14 pre-existing baseline errors and would block every commit. Add it once the baseline is zero.
+- Slow commit? `SKIP=pytest suite` skips just the suite for a WIP commit; the Quality gates above remain the delivery bar.
+- Notebook edits: keep `notebooks/*.py` as jupytext percent scripts; after edits run `uv run --no-sync jupytext --sync notebooks/*.py` (the hook only syncs staged pairs).
+
+### Kaggle dataset upload
+
+```bash
+uv run python scripts/upload_dataset.py nonlinear-rnns-can-be-parallel --version-notes "vX"
+```
+
+Requires `KAGGLE_USERNAME` plus `KAGGLE_KEY` / `KAGGLE_API_TOKEN` / `~/.kaggle/kaggle.json`. `_resolve_username()` probes existence only — never read or echo credential values. `kagglehub` lives in the `notebooks` extra: sync it or the hook and upload tests fail on import.
 
 ## Testing
 
