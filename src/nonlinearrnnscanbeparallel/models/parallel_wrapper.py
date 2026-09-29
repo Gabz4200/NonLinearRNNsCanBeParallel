@@ -4,7 +4,9 @@ Implements the chunkwise parallel training framework:
 1. Per-layer scaffold scans the layer's input to produce boundary summaries
 2. Translator maps scaffold summaries to target RNN boundary states
 3. Target RNN runs in parallel across chunks from boundary states
-4. Gradients are isolated: target from within-chunk BPTT, scaffold/translator from boundary path
+4. Gradients are isolated: the target's own recurrence never crosses chunks,
+   so target params see within-chunk BPTT only, while scaffold/translator
+   learn solely via the boundary path (translator outputs -> chunk inits).
 
 The wrapper exposes hidden states so custom output heads and losses can be attached.
 """
@@ -51,13 +53,16 @@ def _clip_params(params, bound: float) -> None:
 def configure_gradient_clipping(
     model, target_grad_clip=1.0, scaffold_grad_clip=0.5, translator_grad_clip=0.5
 ):
-    """Configure gradient clipping for different parameter groups.
+    """Clamp gradients element-wise to per-group bounds before each optimizer step.
+
+    Despite the ``*_clip`` names this is value clamping (``grad.clamp_``),
+    not norm clipping. Applied via ``GradientClippingCallback``.
 
     Args:
         model: The ParallelRNNTrainer model
-        target_grad_clip: Max gradient norm for target RNN parameters
-        scaffold_grad_clip: Max gradient norm for scaffold parameters
-        translator_grad_clip: Max gradient norm for translator parameters
+        target_grad_clip: Element-wise clamp bound for target RNN gradients
+        scaffold_grad_clip: Element-wise clamp bound for scaffold gradients
+        translator_grad_clip: Element-wise clamp bound for translator gradients
     """
 
     def clip_gradients():
@@ -85,11 +90,9 @@ def _reshape_for_chunks(x: torch.Tensor, chunk_size: int) -> tuple[torch.Tensor,
     """
     B, T, D = x.shape
     num_chunks = (T + chunk_size - 1) // chunk_size
-    # Pad if needed
     pad_len = num_chunks * chunk_size - T
     if pad_len > 0:
         x = torch.cat([x, torch.zeros(B, pad_len, D, device=x.device, dtype=x.dtype)], dim=1)
-    # Reshape: [B, M*C, D] -> [B, M, C, D] -> [M*B, C, D]
     x_chunks = (
         x.view(B, num_chunks, chunk_size, D).transpose(0, 1).reshape(num_chunks * B, chunk_size, D)
     )
@@ -99,9 +102,24 @@ def _reshape_for_chunks(x: torch.Tensor, chunk_size: int) -> tuple[torch.Tensor,
 
 def _reshape_from_chunks(x_chunks: torch.Tensor, B: int, T: int, num_chunks: int) -> torch.Tensor:
     """Reshape [M*B, C, D] -> [B, T, D]."""
-    # [M*B, C, D] -> [M, B, C, D] -> [B, M, C, D] -> [B, T, D]
     x = x_chunks.view(num_chunks, B, x_chunks.shape[1], x_chunks.shape[2]).transpose(0, 1)
     return x.reshape(B, T, x_chunks.shape[2])
+
+
+def _unchunk_extra(
+    extra: dict[str, torch.Tensor] | None, num_chunks: int, batch_size: int
+) -> dict[str, torch.Tensor] | None:
+    """Keep only the last chunk's entries from chunked extra state."""
+    if extra is None or not isinstance(extra, dict):
+        return None
+    new_extra: dict[str, torch.Tensor] = {}
+    for k, v in extra.items():
+        if v.dim() >= 2 and v.shape[0] == num_chunks * batch_size:
+            new_shape = (num_chunks, batch_size) + v.shape[1:]
+            new_extra[k] = v.view(new_shape)[-1]
+        else:
+            new_extra[k] = v
+    return new_extra
 
 
 def _infer_target_type(target_rnn: nn.Module) -> str:
@@ -167,8 +185,14 @@ class ParallelRNNTrainer(nn.Module):
     ) -> None:
         """Args:
         target_rnn: target RNN with ``layers`` as [rnn, ff] pairs.
-        target_type: deprecated legacy selector for the m2rnn code path
-            and default translator. Prefer explicit scaffold/translator keys.
+        target_type: target cell kind (min_gru | min_lstm | mlp | rkan |
+            faster_kan | m2rnn), inferred from the target when None.
+            Drives state geometry (vector vs matrix), log-space positivity
+            handling, and the default translator.
+        detach_boundary: detach translated boundary states, cutting
+            scaffold/translator gradients from the target path. Keep False:
+            no auxiliary boundary loss exists, so True freezes the
+            scaffold/translator at init.
         scaffold_type: min_gru | min_lstm | linear_sum | fourier.
         scaffold_num_layers: stacked scaffold layers per outer layer (1..N).
         scaffold_positional: add sinusoidal positional encoding to scaffold
@@ -200,7 +224,6 @@ class ParallelRNNTrainer(nn.Module):
             classifier = getattr(target_rnn, "classifier", nn.Identity())
             self.output_head = nn.Sequential(final_norm, classifier)
 
-        # Infer target properties if not provided
         if num_layers is None:
             num_layers = getattr(target_rnn, "num_layers", 1)
         if hidden_dim is None:
@@ -289,7 +312,6 @@ class ParallelRNNTrainer(nn.Module):
             If state not provided and not training and return_hidden=True: (logits, hidden_states)
             If state not provided but training: (logits, new_state) for RNNModule compatibility
         """
-        # Check if state was explicitly passed
         state_provided = state is not _STATE_NOT_PROVIDED
         state_list: RNNStateList | None = (
             cast(RNNStateList | None, state) if state_provided else None
@@ -304,12 +326,10 @@ class ParallelRNNTrainer(nn.Module):
                 )
             x = embed(x)
 
-        # In inference mode, run target RNN sequentially (no scaffold/translator)
         if not self.training:
-            out, new_state = self.target(x, state_list)
             if return_hidden:
-                return out, out  # For seq models, output often IS the hidden state
-            # Always return tuple for RNNModule compatibility when state was provided
+                return self._eval_with_hidden(x, state_list)
+            out, new_state = self.target(x, state_list)
             if state_provided:
                 return out, new_state
             return out
@@ -335,12 +355,10 @@ class ParallelRNNTrainer(nn.Module):
         ):
             x = self.input_proj(x)
 
-        # Process layer by layer
         layer_input = x
         current_state = state_list
 
         for layer_idx in range(self.num_layers):
-            # Get the RNN and FF sublayers for this layer
             rnn_layer, ff_layer = self._get_layer_pair(layer_idx)
 
             if not boundary_indices:
@@ -366,36 +384,26 @@ class ParallelRNNTrainer(nn.Module):
 
             layer_output = ff_layer(layer_output)
 
-            # Update current_state with the final state from this layer
-            if current_state is not None:
-                # Update the state for this layer with the final state
-                new_states = list(current_state.states)
-                new_states[layer_idx] = layer_final_state
-                current_state = RNNStateList(new_states)
-            else:
-                # Initialize current_state from layer_final_state for the first layer
+            if current_state is None:
                 if layer_idx == 0:
-                    new_states = [
-                        RNNState(hidden=torch.zeros_like(layer_final_state.hidden))
-                        for _ in range(self.num_layers)
-                    ]
-                    current_state = RNNStateList(new_states)
+                    current_state = RNNStateList(
+                        [
+                            RNNState(hidden=torch.zeros_like(layer_final_state.hidden))
+                            for _ in range(self.num_layers)
+                        ]
+                    )
                 assert current_state is not None
-                new_states = list(current_state.states)
-                new_states[layer_idx] = layer_final_state
-                current_state = RNNStateList(new_states)
+            new_states = list(current_state.states)
+            new_states[layer_idx] = layer_final_state
+            current_state = RNNStateList(new_states)
 
-            # Prepare for next layer
             layer_input = layer_output
 
-        # layer_input is now final hidden states [B, T, D]
         hidden_states = layer_input
         assert current_state is not None
 
         if self.output_head is not None:
             logits = self.output_head(hidden_states)
-            # Return tuple if state was explicitly provided (for RNNModule compatibility)
-            # or if in inference mode with state provided
             if state_provided:
                 return logits, current_state
             if return_hidden:
@@ -405,6 +413,38 @@ class ParallelRNNTrainer(nn.Module):
         if return_hidden:
             return hidden_states, hidden_states
         return hidden_states
+
+    def _eval_with_hidden(
+        self, x: torch.Tensor, state: RNNStateList | None
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Run the target sequentially, capturing pre-head hidden states.
+
+        Hooks the target's ``final_norm`` input so eval ``return_hidden``
+        matches the training path (pre-head activations): callers can
+        recompute ``logits == head(hidden)`` in either mode.
+        """
+        head = getattr(self.target, "final_norm", None)
+        if head is None:
+            head = getattr(self.target, "classifier", None)
+        if head is None:
+            raise AttributeError("return_hidden=True needs a target with final_norm or classifier")
+        captured: dict[str, torch.Tensor] = {}
+
+        def _capture(
+            _module: nn.Module, args: tuple[torch.Tensor, ...], _output: torch.Tensor
+        ) -> None:
+            captured["hidden"] = args[0]
+
+        handle = head.register_forward_hook(_capture)
+        try:
+            out, _ = self.target(x, state)
+        finally:
+            handle.remove()
+        if "hidden" not in captured:
+            raise RuntimeError(
+                "target forward did not invoke final_norm/classifier; cannot capture hidden states"
+            )
+        return out, captured["hidden"]
 
     def training_step(
         self,
@@ -433,12 +473,10 @@ class ParallelRNNTrainer(nn.Module):
 
     def _get_layer_pair(self, layer_idx: int) -> tuple[nn.Module, nn.Module]:
         """Get RNN layer and FF layer for given index."""
-        # Target RNNs in this codebase have self.layers as ModuleList of [rnn, ff] pairs
         layers = self.target.layers
         layer_pair = layers[layer_idx]  # type: ignore[index]
         if isinstance(layer_pair, nn.ModuleList):
             return layer_pair[0], layer_pair[1]
-        # Fallback: assume it's a tuple/list
         return layer_pair[0], layer_pair[1]  # type: ignore[index, return-value]
 
     def _run_layer_sequential(
@@ -450,14 +488,11 @@ class ParallelRNNTrainer(nn.Module):
         """Run a single layer sequentially (for single chunk or inference)."""
         rnn_layer, ff_layer = self._get_layer_pair(layer_idx)
 
-        # Initialize state if None - the individual RNN layer needs a state
         layer_state = None
         if state is not None:
             layer_state = state[layer_idx]
         else:
-            # Create initial state for this layer
             B = layer_input.shape[0]
-            # Get dimensions safely
             num_heads = getattr(rnn_layer, "num_heads", self.num_heads)
             head_dim = getattr(rnn_layer, "head_dim", self.hidden_dim // self.num_heads)
 
@@ -505,13 +540,11 @@ class ParallelRNNTrainer(nn.Module):
         layer_output, new_state = rnn_layer(layer_input, layer_state)
         layer_output = ff_layer(layer_output)
 
-        # Return full state list with this layer's new state
         if state is not None:
             new_states = list(state.states)
             new_states[layer_idx] = new_state
             return layer_output, RNNStateList(new_states)
         else:
-            # Create new state list
             new_states = [
                 RNNState(hidden=torch.zeros_like(new_state.hidden)) for _ in range(self.num_layers)
             ]
@@ -546,10 +579,8 @@ class ParallelRNNTrainer(nn.Module):
         B, T, D = layer_input.shape
         num_chunks = (T + self.chunk_size - 1) // self.chunk_size
 
-        # Reshape input for parallel chunk processing: [B, T, D] -> [M*B, C, D]
         chunked_input, num_chunks, C, padded_T = _reshape_for_chunks(layer_input, self.chunk_size)
 
-        # Expand boundary states to per-chunk initial states: [B, M, D] -> [M*B, D]
         # boundary_states is [B, M-1, D], prepend zeros for first chunk
         zero_boundary = torch.zeros(
             B, 1, self.hidden_dim, device=boundary_states.device, dtype=boundary_states.dtype
@@ -565,13 +596,11 @@ class ParallelRNNTrainer(nn.Module):
             num_chunks * B, -1
         )  # [M*B, D]
 
-        # For multi-head RNNs, reshape to [M*B, H, D_head]
         if self.target_type in ("mlp", "rkan") and self.num_heads > 1:
             # D = H * D_head
             d_head = self.hidden_dim // self.num_heads
             chunk_initial_states = chunk_initial_states.view(num_chunks * B, self.num_heads, d_head)
 
-        # Get initial state for this layer
         if initial_state is not None:
             # Use provided initial state for first chunk only
             h0 = initial_state[layer_idx].hidden
@@ -586,23 +615,15 @@ class ParallelRNNTrainer(nn.Module):
                     # Vector-state target (e.g. min_gru/min_lstm): flatten heads.
                     h0 = h0.reshape(num_chunks * B, -1)
             else:
-                # Single vector: [B, D] -> expand to [M*B, D]
                 h0 = h0.unsqueeze(0).expand(num_chunks, -1, -1).reshape(num_chunks * B, -1)
             # Override first chunk's state with provided initial state
             chunk_initial_states[:B] = h0[:B]
 
-        # Run RNN layer on chunked input
-        # The RNN layer's forward expects [B, T, D] and state
-        # We give it [M*B, C, D] with expanded states
         chunk_state = RNNState(hidden=chunk_initial_states)
         chunk_output, chunk_final_state = rnn_layer.forward(chunked_input, chunk_state)  # type: ignore[misc]
 
-        # Reshape back: [M*B, C, D] -> [B, T, D]
         layer_output = _reshape_from_chunks(chunk_output, B, padded_T, num_chunks)
 
-        # Extract final state from last chunk
-        # chunk_final_state.hidden is [M*B, D] or [M*B, H, D_head]
-        # We need the last chunk's state: [B, D] or [B, H, D_head]
         if chunk_final_state.hidden.dim() == 2:
             # [M*B, D] -> reshape to [M, B, D] -> take last [B, D]
             final_hidden = chunk_final_state.hidden.view(num_chunks, B, -1)[-1]  # [B, D]
@@ -612,22 +633,11 @@ class ParallelRNNTrainer(nn.Module):
                 num_chunks, B, *chunk_final_state.hidden.shape[1:]
             )[-1]
 
-        final_state = RNNState(hidden=final_hidden)
-        if chunk_final_state.extra is not None:
-            # Handle extra (e.g., conv_cache) - take from last chunk
-            extra = chunk_final_state.extra
-            if isinstance(extra, dict):
-                new_extra = {}
-                for k, v in extra.items():
-                    if v.dim() >= 2 and v.shape[0] == num_chunks * B:
-                        # Reshape and take last chunk
-                        new_shape = (num_chunks, B) + v.shape[1:]
-                        new_extra[k] = v.view(new_shape)[-1]
-                    else:
-                        new_extra[k] = v
-                final_state = RNNState(hidden=final_hidden, extra=new_extra)
+        final_state = RNNState(
+            hidden=final_hidden,
+            extra=_unchunk_extra(chunk_final_state.extra, num_chunks, B),
+        )
 
-        # Trim padding if any
         return layer_output[:, :T, :], final_state
 
     def _run_m2rnn_layer_parallel(
@@ -649,15 +659,12 @@ class ParallelRNNTrainer(nn.Module):
         B, T, D = layer_input.shape
         num_chunks = (T + self.chunk_size - 1) // self.chunk_size
 
-        # Get M2RNN dimensions from the layer
         num_heads = getattr(rnn_layer, "num_heads", self.num_heads)
         key_dim = getattr(rnn_layer, "key_dim", 16)
         value_dim = getattr(rnn_layer, "value_dim", 16)
 
-        # Reshape input for parallel chunk processing: [B, T, D] -> [M*B, C, D]
         chunked_input, num_chunks, C, padded_T = _reshape_for_chunks(layer_input, self.chunk_size)
 
-        # Expand boundary states to per-chunk initial states
         # boundary_states is [B, M-1, N, K, V], prepend zeros for first chunk
         zero_boundary = torch.zeros(
             B,
@@ -675,22 +682,18 @@ class ParallelRNNTrainer(nn.Module):
             num_chunks * B, num_heads, key_dim, value_dim
         )  # [M*B, N, K, V]
 
-        # Handle conv_cache if provided in initial_state
         chunk_conv_cache = None
         if initial_state is not None:
             extra = initial_state[layer_idx].extra
             if extra is not None:
                 conv_cache = extra.get("conv_cache")
                 if conv_cache is not None:
-                    # conv_cache is [B, proj_dim, kernel_size-1]
-                    # Expand to chunks: [B, ...] -> [M*B, ...]
                     chunk_conv_cache = (
                         conv_cache.unsqueeze(0)
                         .expand(num_chunks, -1, -1, -1)
                         .reshape(num_chunks * B, *conv_cache.shape[1:])
                     )
 
-        # Override first chunk's state with provided initial state
         if initial_state is not None:
             h0 = initial_state[layer_idx].hidden
             # h0 is [B, N, K, V], expand to [M*B, N, K, V]
@@ -701,7 +704,6 @@ class ParallelRNNTrainer(nn.Module):
             )
             chunk_initial_states[:B] = h0[:B]
 
-            # Also use provided conv_cache for first chunk
             if chunk_conv_cache is not None:
                 extra = initial_state[layer_idx].extra
                 if extra is not None:
@@ -709,39 +711,21 @@ class ParallelRNNTrainer(nn.Module):
                     if provided_cache is not None:
                         chunk_conv_cache[:B] = provided_cache
 
-        # Create state with hidden and conv_cache
         extra = {"conv_cache": chunk_conv_cache} if chunk_conv_cache is not None else None
         chunk_state = RNNState(hidden=chunk_initial_states, extra=extra)
 
-        # Run RNN layer on chunked input
         chunk_output, chunk_final_state = rnn_layer.forward(chunked_input, chunk_state)  # type: ignore[misc]
 
-        # Reshape back: [M*B, C, D] -> [B, T, D]
         layer_output = _reshape_from_chunks(chunk_output, B, padded_T, num_chunks)
 
-        # Extract final state from last chunk
-        # chunk_final_state.hidden is [M*B, N, K, V]
         final_hidden = chunk_final_state.hidden.view(num_chunks, B, num_heads, key_dim, value_dim)[
             -1
         ]  # [B, N, K, V]
 
-        final_extra = None
-        if chunk_final_state.extra is not None:
-            extra = chunk_final_state.extra
-            if isinstance(extra, dict):
-                new_extra = {}
-                for k, v in extra.items():
-                    if v.dim() >= 2 and v.shape[0] == num_chunks * B:
-                        # Reshape and take last chunk
-                        new_shape = (num_chunks, B) + v.shape[1:]
-                        new_extra[k] = v.view(new_shape)[-1]
-                    else:
-                        new_extra[k] = v
-                final_extra = new_extra
+        final_extra = _unchunk_extra(chunk_final_state.extra, num_chunks, B)
 
         final_state = RNNState(hidden=final_hidden, extra=final_extra)
 
-        # Trim padding if any
         return layer_output[:, :T, :], final_state
 
     def get_boundary_states(self, x: torch.Tensor) -> list[torch.Tensor]:
@@ -772,10 +756,6 @@ class ParallelRNNTrainer(nn.Module):
             boundary_states = self.translators[layer_idx](boundary_scaffold)
             boundary_states_per_layer.append(boundary_states)
 
-            # For next layer, we'd need the layer output
-            # This is just for inspection, so we skip the actual layer computation
-            # In practice, you'd run the full forward to get accurate boundary states
-
         return boundary_states_per_layer
 
     def step(self, x_t: torch.Tensor, state: RNNStateList | None = None):
@@ -783,15 +763,10 @@ class ParallelRNNTrainer(nn.Module):
         step_fn = getattr(self.target, "step", None)
         if callable(step_fn):
             return step_fn(x_t, state)
-        # Fallback: run single-step forward
-        return self.target(x_t.unsqueeze(1), state)[0].squeeze(1), state
+        out, new_state = self.target(x_t.unsqueeze(1), state)
+        return out.squeeze(1), new_state
 
     def train(self, mode: bool = True) -> ParallelRNNTrainer:
-        """Set training mode."""
-        self.training = mode
-        self.target.train(mode)
-        for scaffold in self.scaffolds:
-            scaffold.train(mode)
-        for trans in self.translators:
-            trans.train(mode)
+        """Set training mode; super().train() reaches every child module."""
+        super().train(mode)
         return self

@@ -6,7 +6,9 @@ from typing import cast
 
 import pytest
 import torch
+from torch import nn
 
+from nonlinearrnnscanbeparallel.models.base import RNNState, RNNStateList
 from nonlinearrnnscanbeparallel.models.parallel_wrapper import ParallelRNNTrainer
 from nonlinearrnnscanbeparallel.models.registry import get_model
 from nonlinearrnnscanbeparallel.models.scaffold import MinGRUScaffold, ScaffoldStack
@@ -319,28 +321,100 @@ def test_parallel_wrapper_target_types() -> None:
         ("min_gru", "mlp"),
         ("min_lstm", "mlp"),
     ]:
-        if model_name in ["min_gru", "min_lstm"]:
-            target = get_model(
-                model_name,
-                input_dim=16,
-                hidden_dim=16,
-                num_layers=1,
-                num_heads=2,
-                dropout=0.0,
-                num_classes=2,
-            )
-        else:
-            target = get_model(
-                model_name,
-                input_dim=16,
-                hidden_dim=16,
-                num_layers=1,
-                num_heads=2,
-                dropout=0.0,
-                num_classes=2,
-            )
+        target = get_model(
+            model_name,
+            input_dim=16,
+            hidden_dim=16,
+            num_layers=1,
+            num_heads=2,
+            dropout=0.0,
+            num_classes=2,
+        )
 
         wrapper = ParallelRNNTrainer(target, chunk_size=4, scaffold_dim=8, target_type=target_type)
         x = torch.randn(1, 8, 16)
         logits = wrapper(x)
         assert logits.shape == (1, 8, 2)
+
+
+def test_when_train_mode_toggled_then_all_children_follow() -> None:
+    """eval()/train() must reach every child, including heads and projections."""
+    target = get_model(
+        "mlp_rnn",
+        input_dim=32,
+        hidden_dim=32,
+        num_layers=1,
+        num_heads=2,
+        dropout=0.0,
+        num_classes=2,
+    )
+    wrapper = ParallelRNNTrainer(target, chunk_size=8, scaffold_dim=16)
+    children = [
+        wrapper.target,
+        cast(nn.Module, wrapper.input_proj),
+        cast(nn.Module, wrapper.output_head),
+        *wrapper.scaffolds,
+        *wrapper.translators,
+    ]
+    wrapper.eval()
+    assert all(not child.training for child in children)
+    wrapper.train(True)
+    assert all(child.training for child in children)
+
+
+def test_when_eval_return_hidden_then_hidden_recomputes_logits() -> None:
+    """Eval return_hidden returns pre-head states under the same contract as train."""
+    target = get_model(
+        "mlp_rnn",
+        input_dim=32,
+        hidden_dim=32,
+        num_layers=1,
+        num_heads=2,
+        dropout=0.0,
+        num_classes=2,
+    )
+    wrapper = ParallelRNNTrainer(target, chunk_size=8, scaffold_dim=16)
+    wrapper.eval()
+    x = torch.randn(2, 32, 32)
+    logits, hidden = wrapper(x, return_hidden=True)
+    assert logits.shape == (2, 32, 2)
+    assert hidden.shape == (2, 32, 32)
+    recomputed = target.classifier(target.final_norm(hidden))
+    torch.testing.assert_close(logits, recomputed)
+    torch.testing.assert_close(logits, wrapper(x))
+
+
+class _NoStepLayer(nn.Module):
+    """Single passthrough layer without a step method (exercises the fallback)."""
+
+    def forward(self, x: torch.Tensor, state: RNNState) -> tuple[torch.Tensor, RNNState]:
+        return x, RNNState(hidden=state.hidden + 1)
+
+
+class _NoStepTarget(nn.Module):
+    """Minimal target without step: one passthrough layer, identity head."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.layer = _NoStepLayer()
+        self.layers = nn.ModuleList([nn.ModuleList([self.layer, nn.Identity()])])
+        self.num_layers = 1
+        self.hidden_dim = 8
+        self.num_heads = 1
+
+    def forward(
+        self, x: torch.Tensor, state: RNNStateList | None = None
+    ) -> tuple[torch.Tensor, RNNStateList]:
+        if state is None:
+            state = RNNStateList([RNNState(hidden=torch.zeros(x.shape[0], 8))])
+        out, new_state = self.layer(x, state[0])
+        return out, RNNStateList([new_state])
+
+
+def test_when_target_lacks_step_then_fallback_returns_new_state() -> None:
+    """Step fallback must advance state instead of echoing the input state."""
+    wrapper = ParallelRNNTrainer(_NoStepTarget(), chunk_size=4, scaffold_dim=4)
+    state = RNNStateList([RNNState(hidden=torch.zeros(2, 8))])
+    out, new_state = wrapper.step(torch.randn(2, 8), state)
+    assert out.shape == (2, 8)
+    torch.testing.assert_close(new_state[0].hidden, torch.ones(2, 8))
