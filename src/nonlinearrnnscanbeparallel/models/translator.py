@@ -12,6 +12,12 @@ from torch import nn
 from .base import RMSNorm
 from .rkan import RKANLayer
 
+# Upper bound on the translator MLP's hidden width. Matrix-state targets emit
+# num_heads * prod(memory shape) units per boundary, which can reach tens of
+# thousands; expanding that 4x would put almost the entire parameter budget in
+# the translator instead of the target RNN.
+TRANSLATOR_MAX_HIDDEN = 512
+
 
 def _init_gdn2_linear(layer: nn.Linear) -> None:
     """Initialize linear layer per GDN-2 recipe: Xavier uniform with gain 2^-2.5, zero bias."""
@@ -88,8 +94,9 @@ class TranslatorLayer(nn.Module):
 
     ``translator_type`` (mlp | rkan) is a pure hyperparameter, decoupled
     from the target model being trained. ``output_shape`` selects the
-    output geometry: "vector" [B, M, D] or "matrix" [B, M, N, K, V]
-    (M2RNN targets only).
+    output geometry: "vector" [B, M, D] or "matrix".  The matrix geometry is
+    ``[B, M, N, K, V]`` for M2RNN, and ``[B, M, N, S, K, V]`` when
+    ``num_memories > 1`` (HOPE stacks five memories per head on axis 2).
     """
 
     def __init__(
@@ -110,6 +117,8 @@ class TranslatorLayer(nn.Module):
         num_heads: int = 4,
         key_dim: int = 16,
         value_dim: int = 16,
+        num_memories: int = 1,
+        state_scale: float | None = None,
         pre_norm: bool = True,
         norm_type: str = "rmsnorm",
     ) -> None:
@@ -118,6 +127,8 @@ class TranslatorLayer(nn.Module):
             raise ValueError(f"Unknown translator_type: {translator_type}")
         if output_shape not in ("vector", "matrix"):
             raise ValueError(f"Unknown output_shape: {output_shape}")
+        if num_memories < 1:
+            raise ValueError("num_memories must be >= 1")
 
         self.input_dim = input_dim
         self.hidden_dim = hidden_dim
@@ -127,19 +138,24 @@ class TranslatorLayer(nn.Module):
         self.num_heads = num_heads
         self.key_dim = key_dim
         self.value_dim = value_dim
-        matrix_state_dim = num_heads * key_dim * value_dim
+        self.num_memories = num_memories
+        matrix_state_dim = num_heads * num_memories * key_dim * value_dim
 
         # Pre-norm (on scaffold output), RMSNorm by default, LayerNorm opt-in
         self.input_norm = _build_norm(norm_type, input_dim) if pre_norm else nn.Identity()
 
         if translator_type == "mlp":
             out_dim = matrix_state_dim if output_shape == "matrix" else hidden_dim
-            # 2-layer MLP with SiLU (matching MLP-RNN, minGRU, minLSTM)
+            # 2-layer MLP with SiLU (matching MLP-RNN, minGRU, minLSTM).
+            # The hidden width is capped: matrix targets can emit tens of
+            # thousands of units per boundary, and an uncapped 4x expansion
+            # there dominates the whole parameter budget.
+            net_hidden = min(out_dim * 4, max(out_dim, TRANSLATOR_MAX_HIDDEN))
             self.net = nn.Sequential(
-                nn.Linear(input_dim, out_dim * 4, bias=False),
+                nn.Linear(input_dim, net_hidden, bias=False),
                 nn.SiLU(),
                 nn.Dropout(dropout),
-                nn.Linear(out_dim * 4, out_dim, bias=False),
+                nn.Linear(net_hidden, out_dim, bias=False),
             )
             if use_gdn2_init:
                 self._apply_gdn2_init()
@@ -164,6 +180,10 @@ class TranslatorLayer(nn.Module):
             self.output_norm = RMSNorm(matrix_state_dim)
         else:
             self.output_norm = RMSNorm(hidden_dim)
+        # Targets whose state magnitude differs a lot from unit RMS (HOPE's
+        # memories initialize near zero) need the boundary rescaled to match;
+        # otherwise chunk 1 starts far outside the trained basin.
+        self.state_scale = state_scale
 
     def _apply_gdn2_init(self) -> None:
         """Apply GDN-2 initialization: Xavier uniform with gain 2^-2.5, zero biases."""
@@ -180,15 +200,27 @@ class TranslatorLayer(nn.Module):
         Returns:
             Boundary hidden states:
             - vector output_shape: [B, M, D_target]
-            - matrix output_shape: [B, M, N, K, V] (matrix state)
+            - matrix output_shape: [B, M, N, K, V], plus an extra
+              [B, M, N, S, K, V] axis when ``num_memories > 1``
         """
         x = self.input_norm(x)
         x = self.net(x)
-        x = self.output_norm(x)
+        if self.output_norm is not None:
+            x = self.output_norm(x)
+        if self.state_scale is not None:
+            # The output norm puts every boundary at unit RMS, but a target's
+            # state may live at a very different magnitude (HOPE's memories
+            # start near zero). Rescale so the boundary matches that scale.
+            x = x * self.state_scale
         if self.output_shape == "matrix":
-            # Reshape to matrix state [B, M, N, K, V]
+            # Reshape to matrix state; the memory axis is dropped when a target
+            # keeps a single matrix per head.
             batch, num_boundaries, _ = x.shape
-            x = x.view(batch, num_boundaries, self.num_heads, self.key_dim, self.value_dim)
+            shape = [batch, num_boundaries, self.num_heads]
+            if self.num_memories > 1:
+                shape.append(self.num_memories)
+            shape.extend((self.key_dim, self.value_dim))
+            x = x.view(*shape)
         return x
 
 
@@ -197,6 +229,7 @@ _LEGACY_TARGET_TO_TRANSLATOR = {
     "min_gru": "mlp",
     "min_lstm": "mlp",
     "m2rnn": "mlp",
+    "hope": "mlp",
     "rkan": "rkan",
 }
 
@@ -228,6 +261,8 @@ class TranslatorStack(nn.Module):
         num_heads: int = 4,
         key_dim: int = 16,
         value_dim: int = 16,
+        num_memories: int = 1,
+        state_scale: float | None = None,
         pre_norm: bool = True,
         norm_type: str = "rmsnorm",
     ) -> None:
@@ -257,6 +292,8 @@ class TranslatorStack(nn.Module):
                     num_heads=num_heads,
                     key_dim=key_dim,
                     value_dim=value_dim,
+                    num_memories=num_memories,
+                    state_scale=state_scale if last else None,
                     pre_norm=pre_norm,
                     norm_type=norm_type,
                 )

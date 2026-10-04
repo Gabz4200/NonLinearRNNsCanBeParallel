@@ -1,4 +1,5 @@
 from .faster_kan_rnn import *  # noqa: F403
+from .hope import *  # noqa: F403
 from .m2rnn import *  # noqa: F403
 from .min_gru import *  # noqa: F403
 from .min_lstm import *  # noqa: F403

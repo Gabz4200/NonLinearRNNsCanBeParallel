@@ -37,6 +37,7 @@ from torch import nn
 
 from .base import BaseRNNModel, RMSNorm, RNNState, RNNStateList
 from .faster_kan import FasterKanFeedForward, FasterKANHead
+from .hope import DEFAULT_HOPE_MEM_DIM, HOPELayer
 from .m2rnn import DEFAULT_KEY_DIM, DEFAULT_VALUE_DIM, M2RNNLayer
 from .min_gru import MinGRULayer
 from .min_lstm import MinLSTMLayer
@@ -44,7 +45,7 @@ from .mlp_rnn import FeedForwardSublayer, MultiHeadRNNLayer, make_mlp_heads
 from .registry import register_model
 from .rkan import RationalFeedForward, RKANHead
 
-MIXER_TYPES = ("mlp", "rkan", "faster_kan", "min_gru", "min_lstm", "m2rnn")
+MIXER_TYPES = ("mlp", "rkan", "faster_kan", "min_gru", "min_lstm", "m2rnn", "hope")
 
 
 def _build_mlp_mixer(
@@ -127,6 +128,17 @@ def _build_m2rnn_mixer(
     )
 
 
+def _build_hope_mixer(
+    hidden_dim: int, num_heads: int, dropout: float, kw: dict[str, Any]
+) -> nn.Module:
+    return HOPELayer(
+        hidden_dim,
+        num_heads,
+        mem_dim=int(kw.get("mem_dim", DEFAULT_HOPE_MEM_DIM)),
+        dropout=dropout,
+    )
+
+
 MIXER_BUILDERS = {
     "mlp": _build_mlp_mixer,
     "rkan": _build_rkan_mixer,
@@ -134,6 +146,7 @@ MIXER_BUILDERS = {
     "min_gru": _build_min_gru_mixer,
     "min_lstm": _build_min_lstm_mixer,
     "m2rnn": _build_m2rnn_mixer,
+    "hope": _build_hope_mixer,
 }
 
 
@@ -195,6 +208,7 @@ class NanoRNN(BaseRNNModel):
         max_seq_len: int = 1024,
         key_dim: int = DEFAULT_KEY_DIM,
         value_dim: int = DEFAULT_VALUE_DIM,
+        mem_dim: int | None = None,
         rkan_degree: int = 3,
         rkan_alpha: float = 1.0,
         rkan_beta: float = 1.0,
@@ -231,12 +245,20 @@ class NanoRNN(BaseRNNModel):
         self.max_seq_len = max_seq_len
         self.key_dim = key_dim
         self.value_dim = value_dim
+        # HOPE retrieves each signal by applying a square memory to the
+        # per-head slice (Eq. 94), so its memory width is pinned to the head
+        # width. Deriving it here keeps `mixer_type="hope"` usable without the
+        # caller restating head_dim as mem_dim.
+        if mixer_type == "hope" and mem_dim is None:
+            mem_dim = hidden_dim // num_heads
+        self.mem_dim = mem_dim if mem_dim is not None else DEFAULT_HOPE_MEM_DIM
 
         mixer_kwargs: dict[str, Any] = {
             "mlp_hidden_mult": mlp_hidden_mult,
             "mlp_num_layers": mlp_num_layers,
             "key_dim": key_dim,
             "value_dim": value_dim,
+            "mem_dim": self.mem_dim,
             "rkan_degree": rkan_degree,
             "rkan_alpha": rkan_alpha,
             "rkan_beta": rkan_beta,
@@ -400,7 +422,8 @@ class NanoRNN(BaseRNNModel):
     def init_state(self, batch_size: int, device: torch.device) -> RNNStateList:
         head_dim = self.hidden_dim // self.num_heads
         states: list[RNNState] = []
-        for _ in range(self.num_layers):
+        for layer_pair in self.layers:
+            mixer = layer_pair[0]
             if self.mixer_type == "m2rnn":
                 proj_dim = self.num_heads * (self.key_dim + self.key_dim + self.value_dim)
                 states.append(
@@ -415,6 +438,13 @@ class NanoRNN(BaseRNNModel):
                         extra={"conv_cache": torch.zeros(batch_size, proj_dim, 3, device=device)},
                     )
                 )
+            elif self.mixer_type == "hope":
+                # HOPE stacks five square memories per head; let the layer own
+                # its zero state so that layout stays defined in one place.
+                init = getattr(mixer, "init_state", None)
+                if not callable(init):
+                    raise TypeError("HOPE mixer must implement init_state")
+                states.append(init(batch_size, device))
             elif self.mixer_type in ("min_gru", "min_lstm"):
                 states.append(
                     RNNState(hidden=torch.ones(batch_size, self.num_heads, head_dim, device=device))

@@ -53,6 +53,11 @@ data:
 parallel:
   chunk_size: 8
   scaffold_dim: 64
+  # Eq. 90's inner chunk for HOPE.  Must be strictly below chunk_size: the
+  # layer's signal o_t reads M_mem alone, so the inner memories (k/v/eta/alpha)
+  # only reach the output through the frozen chunk-start evaluation point.
+  # With one evaluation point per chunk they receive exactly zero gradient.
+  target_chunk_size: 2
 
 trainer:
   accelerator: "cpu"

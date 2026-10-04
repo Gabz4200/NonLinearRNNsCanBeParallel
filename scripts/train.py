@@ -190,6 +190,11 @@ def _build_task(
             translator_num_layers=int(parallel_cfg.get("translator_num_layers", 1)),
             translator_pre_norm=bool(parallel_cfg.get("translator_pre_norm", True)),
             translator_norm_type=str(parallel_cfg.get("translator_norm_type", "rmsnorm")),
+            target_chunk_size=(
+                int(parallel_cfg["target_chunk_size"])
+                if parallel_cfg.get("target_chunk_size") is not None
+                else None
+            ),
         )
 
     def _clip_callback(

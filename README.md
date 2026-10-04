@@ -26,6 +26,7 @@ Each model implements a shared protocol with a parallel `forward`, a single-toke
 | **MLP-RNN** | "Nonlinear RNNs Can Be Parallel" (arXiv:2603.03612) | Multi-head MLP recurrence, residual + FFN sublayers |
 | **rKAN-RNN** | "rKAN" (arXiv:2406.14495) | Rational spline heads in the same multi-head recurrence |
 | **M²RNN** | "M²RNN" (arXiv:2603.14360) | Matrix-valued state with causal conv cache |
+| **HOPE** | "Nested Learning" (arXiv:2512.24695 §8) | Five self-modifying matrix memories + Continuum Memory; needs `parallel.target_chunk_size` |
 | **minGRU / minLSTM** | "Were RNNs All We Needed?" (arXiv:2410.01201) | Log-space parallel scans; also used as scaffolds |
 | **Nano-RNN** | nanoGPT/nanoRWKV skeleton | LM decoder; any cell above plugs in as the mixer |
 
@@ -109,9 +110,30 @@ Each run writes a timestamped `results/<task>_<timestamp>/` directory with the r
 Other entry points:
 
 - `scripts/eval.py`: test-split evaluation for the graph-connectivity task.
+- `scripts/generate.py --checkpoint <ckpt> --model-config <config.yaml> --prompt "..."`: token-by-token decoding from a trained checkpoint.
 - `scripts/export_hf.py --checkpoint <ckpt> --output-dir <dir>`: export a Lightning checkpoint to Hugging Face `safetensors` format (see `integrations/transformers/`).
 - `scripts/param_count.py`: parameter counts per model.
 - `notebooks/01_quickstart.py`: jupytext notebook walking through model construction and forward passes.
+
+### HOPE and `target_chunk_size`
+
+HOPE is the one model here that needs an extra knob. Its inner memories
+(`k`, `v`, `eta`, `alpha`) take their regression target from their own previous
+state, so they only reach the output through Eq. 90's chunk-start evaluation
+point. With one evaluation point per chunk they receive *exactly* zero gradient
+and `M_mem` trains alone. Set `parallel.target_chunk_size` strictly below
+`parallel.chunk_size`:
+
+```bash
+uv run python scripts/train.py --config-name config_hope_tiny \
+  parallel.chunk_size=32 parallel.target_chunk_size=8
+```
+
+The same evaluation point is what keeps training stable. Evaluating on the
+running memory instead makes the self-referential target a positive feedback
+loop that reaches NaN within ~13 optimizer steps at two layers, growing
+geometrically (1e-1 -> 1e+0 -> 1e+2 -> 1e+8 -> 1e+34). See the `HOPE` module
+docstring in `models/hope.py` for the measurements.
 
 ## Tasks
 
