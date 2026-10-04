@@ -19,6 +19,7 @@ import lightning as pl
 import torch
 from torch.utils.data import DataLoader, Dataset
 
+from .collate import collate_lm_samples
 from .tinystories_instruct import TinyStoriesInstructDataModule
 from .wikipedia_lm import WikipediaLMDataModule
 
@@ -109,23 +110,7 @@ class MixedLMDataModule(pl.LightningDataModule):
         self.test_dataset = MixedLMDataset([m.test_dataset for m in self._modules])
 
     def _collate(self, samples: list[dict[str, torch.Tensor]]) -> dict[str, torch.Tensor]:
-        pad_id = self._pad_id
-        max_len = max(s["input_ids"].shape[0] for s in samples)
-        input_ids, labels, attention_mask = [], [], []
-        for s in samples:
-            pad_len = max_len - s["input_ids"].shape[0]
-            input_ids.append(
-                torch.cat([s["input_ids"], s["input_ids"].new_full((pad_len,), pad_id)])
-            )
-            labels.append(torch.cat([s["labels"], s["labels"].new_full((pad_len,), -100)]))
-            attention_mask.append(
-                torch.cat([s["attention_mask"], s["attention_mask"].new_zeros(pad_len)])
-            )
-        return {
-            "input_ids": torch.stack(input_ids),
-            "labels": torch.stack(labels),
-            "attention_mask": torch.stack(attention_mask),
-        }
+        return collate_lm_samples(samples, self._pad_id)
 
     def _dataloader(self, dataset: Dataset) -> DataLoader:
         return DataLoader(

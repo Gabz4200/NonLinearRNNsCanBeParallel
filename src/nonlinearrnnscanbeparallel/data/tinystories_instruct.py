@@ -21,8 +21,11 @@ from typing import Any, cast
 import lightning as pl
 import torch
 from datasets import load_dataset
+from numpy.random import default_rng
 from torch.utils.data import DataLoader, Dataset
 from transformers import AutoTokenizer, PreTrainedTokenizerBase
+
+from .collate import collate_lm_samples
 
 
 @dataclass
@@ -142,8 +145,6 @@ class TinyStoriesInstructDataModule(pl.LightningDataModule):
         if self.train_dataset is not None:
             return
         cfg = self.config
-        from numpy.random import default_rng
-
         stories = self._all_stories(self._load_rows())
         rng = default_rng(cfg.subset_seed)
         indices = rng.permutation(len(stories))
@@ -168,23 +169,7 @@ class TinyStoriesInstructDataModule(pl.LightningDataModule):
         self.test_dataset = TinyStoriesInstructDataset(test_items, self.tokenizer, cfg)
 
     def _collate(self, samples: list[dict[str, torch.Tensor]]) -> dict[str, torch.Tensor]:
-        max_len = max(s["input_ids"].shape[0] for s in samples)
-        pad_id = self.tokenizer.pad_token_id
-        input_ids, labels, attention_mask = [], [], []
-        for s in samples:
-            pad_len = max_len - s["input_ids"].shape[0]
-            input_ids.append(
-                torch.cat([s["input_ids"], s["input_ids"].new_full((pad_len,), pad_id)])
-            )
-            labels.append(torch.cat([s["labels"], s["labels"].new_full((pad_len,), -100)]))
-            attention_mask.append(
-                torch.cat([s["attention_mask"], s["attention_mask"].new_zeros(pad_len)])
-            )
-        return {
-            "input_ids": torch.stack(input_ids),
-            "labels": torch.stack(labels),
-            "attention_mask": torch.stack(attention_mask),
-        }
+        return collate_lm_samples(samples, self.tokenizer.pad_token_id)
 
     def _dataloader(self, dataset: Dataset) -> DataLoader:
         cfg = self.config

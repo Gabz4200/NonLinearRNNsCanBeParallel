@@ -19,8 +19,11 @@ from typing import Any, cast
 import lightning as pl
 import torch
 from datasets import load_dataset
+from numpy.random import default_rng
 from torch.utils.data import DataLoader, Dataset
 from transformers import AutoTokenizer, PreTrainedTokenizerBase
+
+from .collate import collate_lm_samples
 
 FALLBACK_KEYS = ["question", "reasoning"]
 
@@ -154,8 +157,6 @@ class OpenThoughtsLMDataModule(pl.LightningDataModule):
             return
         cfg = self.config
         slice_iter = self._load_slice()
-        from numpy.random import default_rng
-
         rng = default_rng(cfg.subset_seed)
         sample_list = list(slice_iter)
         indices = rng.permutation(len(sample_list))
@@ -180,24 +181,7 @@ class OpenThoughtsLMDataModule(pl.LightningDataModule):
         self.test_dataset = OpenThoughtsLMDataset(test_items, self.tokenizer, cfg)
 
     def _collate(self, samples: list[dict[str, torch.Tensor]]) -> dict[str, torch.Tensor]:
-        max_len = max(s["input_ids"].shape[0] for s in samples)
-        input_ids, labels, attention_mask = [], [], []
-        for s in samples:
-            pad = max_len - s["input_ids"].shape[0]
-            input_ids.append(
-                torch.cat(
-                    [s["input_ids"], s["input_ids"].new_full((pad,), self.tokenizer.pad_token_id)]
-                )
-            )
-            labels.append(torch.cat([s["labels"], s["labels"].new_full((pad,), -100)]))
-            attention_mask.append(
-                torch.cat([s["attention_mask"], s["attention_mask"].new_zeros(pad)])
-            )
-        return {
-            "input_ids": torch.stack(input_ids),
-            "labels": torch.stack(labels),
-            "attention_mask": torch.stack(attention_mask),
-        }
+        return collate_lm_samples(samples, self.tokenizer.pad_token_id)
 
     def _dataloader(self, dataset: Dataset) -> DataLoader:
         cfg = self.config
