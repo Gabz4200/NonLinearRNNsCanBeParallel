@@ -51,6 +51,9 @@ notebooks = [
     "nbconvert>=7.16.0",
     "kagglehub>=1.0.0",
 ]
+taichi = [
+    "taichi>=1.7.0",
+]
 
 [tool.uv]
 conflicts = [
