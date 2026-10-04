@@ -19,7 +19,7 @@ from collections.abc import Callable
 from typing import cast
 
 import torch
-import torch.nn.functional as F
+import torch.nn.functional as functional
 from torch import nn
 from torch.optim.lr_scheduler import LambdaLR
 
@@ -152,24 +152,30 @@ def _reshape_for_chunks(x: torch.Tensor, chunk_size: int) -> tuple[torch.Tensor,
         x_chunks: [M*B, C, D]
         num_chunks: M
         chunk_size: C (the actual chunk size used, which equals chunk_size after padding)
-        padded_T: the padded sequence length (num_chunks * chunk_size)
+        padded_len: the padded sequence length (num_chunks * chunk_size)
     """
-    B, T, D = x.shape
-    num_chunks = (T + chunk_size - 1) // chunk_size
-    pad_len = num_chunks * chunk_size - T
+    batch, seq_len, feat_dim = x.shape
+    num_chunks = (seq_len + chunk_size - 1) // chunk_size
+    pad_len = num_chunks * chunk_size - seq_len
     if pad_len > 0:
-        x = torch.cat([x, torch.zeros(B, pad_len, D, device=x.device, dtype=x.dtype)], dim=1)
+        x = torch.cat(
+            [x, torch.zeros(batch, pad_len, feat_dim, device=x.device, dtype=x.dtype)], dim=1
+        )
     x_chunks = (
-        x.view(B, num_chunks, chunk_size, D).transpose(0, 1).reshape(num_chunks * B, chunk_size, D)
+        x.view(batch, num_chunks, chunk_size, feat_dim)
+        .transpose(0, 1)
+        .reshape(num_chunks * batch, chunk_size, feat_dim)
     )
-    padded_T = num_chunks * chunk_size
-    return x_chunks, num_chunks, chunk_size, padded_T
+    padded_len = num_chunks * chunk_size
+    return x_chunks, num_chunks, chunk_size, padded_len
 
 
-def _reshape_from_chunks(x_chunks: torch.Tensor, B: int, T: int, num_chunks: int) -> torch.Tensor:
+def _reshape_from_chunks(
+    x_chunks: torch.Tensor, batch: int, seq_len: int, num_chunks: int
+) -> torch.Tensor:
     """Reshape [M*B, C, D] -> [B, T, D]."""
-    x = x_chunks.view(num_chunks, B, x_chunks.shape[1], x_chunks.shape[2]).transpose(0, 1)
-    return x.reshape(B, T, x_chunks.shape[2])
+    x = x_chunks.view(num_chunks, batch, x_chunks.shape[1], x_chunks.shape[2]).transpose(0, 1)
+    return x.reshape(batch, seq_len, x_chunks.shape[2])
 
 
 def _unchunk_extra(
@@ -415,14 +421,14 @@ class ParallelRNNTrainer(nn.Module):
                 return out, new_state
             return out
 
-        B, T, _ = x.shape
-        num_chunks = (T + self.chunk_size - 1) // self.chunk_size
+        batch, seq_len, _ = x.shape
+        num_chunks = (seq_len + self.chunk_size - 1) // self.chunk_size
         # Scanner state at index t has consumed input t, so chunk m starts
         # from the state before its first token (index m*chunk_size - 1).
         boundary_indices = [m * self.chunk_size - 1 for m in range(1, num_chunks)]
         if not boundary_indices:
             warnings.warn(
-                f"chunk_size ({self.chunk_size}) >= seq_len ({T}): single-chunk "
+                f"chunk_size ({self.chunk_size}) >= seq_len ({seq_len}): single-chunk "
                 "fallback, scaffold/translator skipped; set chunk_size < T",
                 UserWarning,
                 stacklevel=2,
@@ -592,7 +598,7 @@ class ParallelRNNTrainer(nn.Module):
         if state is not None:
             layer_state = state[layer_idx]
         else:
-            B = layer_input.shape[0]
+            batch = layer_input.shape[0]
             num_heads = getattr(rnn_layer, "num_heads", self.num_heads)
             head_dim = getattr(rnn_layer, "head_dim", self.hidden_dim // self.num_heads)
 
@@ -602,14 +608,14 @@ class ParallelRNNTrainer(nn.Module):
                 init = getattr(rnn_layer, "init_state", None)
                 if not callable(init):
                     raise TypeError("HOPE layer must implement init_state")
-                layer_state = init(B, layer_input.device)
+                layer_state = init(batch, layer_input.device)
             elif self.target_type == "m2rnn":
                 key_dim = getattr(rnn_layer, "key_dim", 16)
                 value_dim = getattr(rnn_layer, "value_dim", 16)
                 proj_dim = num_heads * (key_dim + key_dim + value_dim)
                 layer_state = RNNState(
                     hidden=torch.zeros(
-                        B,
+                        batch,
                         num_heads,
                         key_dim,
                         value_dim,
@@ -618,7 +624,7 @@ class ParallelRNNTrainer(nn.Module):
                     ),
                     extra={
                         "conv_cache": torch.zeros(
-                            B, proj_dim, 3, device=layer_input.device, dtype=layer_input.dtype
+                            batch, proj_dim, 3, device=layer_input.device, dtype=layer_input.dtype
                         )
                     },
                 )
@@ -626,7 +632,7 @@ class ParallelRNNTrainer(nn.Module):
                 # Log-space recurrences require strictly positive initial states.
                 layer_state = RNNState(
                     hidden=torch.ones(
-                        B,
+                        batch,
                         num_heads,
                         head_dim,
                         device=layer_input.device,
@@ -636,7 +642,7 @@ class ParallelRNNTrainer(nn.Module):
             else:
                 layer_state = RNNState(
                     hidden=torch.zeros(
-                        B,
+                        batch,
                         num_heads,
                         head_dim,
                         device=layer_input.device,
@@ -656,9 +662,9 @@ class ParallelRNNTrainer(nn.Module):
             # own, not zeros. A parameter-seeded layer (HOPE) must get its
             # learned init here too, for the same reason its first chunk does:
             # a zero state would silently drop its gradient chain.
-            B, device, dtype = layer_input.shape[0], layer_input.device, layer_input.dtype
+            batch, device, dtype = layer_input.shape[0], layer_input.device, layer_input.dtype
             new_states = [
-                self._initial_state_for(layer_idx, B, device, dtype)
+                self._initial_state_for(layer_idx, batch, device, dtype)
                 for layer_idx in range(self.num_layers)
             ]
             new_states[layer_idx] = new_state
@@ -712,30 +718,34 @@ class ParallelRNNTrainer(nn.Module):
                 layer_idx, rnn_layer, layer_input, boundary_states, initial_state
             )
 
-        B, T, D = layer_input.shape
-        num_chunks = (T + self.chunk_size - 1) // self.chunk_size
+        batch, seq_len, feat_dim = layer_input.shape
+        num_chunks = (seq_len + self.chunk_size - 1) // self.chunk_size
 
-        chunked_input, num_chunks, C, padded_T = _reshape_for_chunks(layer_input, self.chunk_size)
+        chunked_input, num_chunks, _chunk_len, padded_len = _reshape_for_chunks(
+            layer_input, self.chunk_size
+        )
 
         # boundary_states is [B, M-1, D], prepend zeros for first chunk
         zero_boundary = torch.zeros(
-            B, 1, self.hidden_dim, device=boundary_states.device, dtype=boundary_states.dtype
+            batch, 1, self.hidden_dim, device=boundary_states.device, dtype=boundary_states.dtype
         )
         all_boundaries = torch.cat([zero_boundary, boundary_states], dim=1)  # [B, M, D]
 
         # For min_gru/min_lstm, boundary states must be positive for log-space operations
         # Apply softplus to ensure positive states (zeros become small positive)
         if self.target_type in ("min_gru", "min_lstm"):
-            all_boundaries = F.softplus(all_boundaries)
+            all_boundaries = functional.softplus(all_boundaries)
 
         chunk_initial_states = all_boundaries.transpose(0, 1).reshape(
-            num_chunks * B, -1
+            num_chunks * batch, -1
         )  # [M*B, D]
 
         if self.target_type in ("mlp", "rkan") and self.num_heads > 1:
             # D = H * D_head
             d_head = self.hidden_dim // self.num_heads
-            chunk_initial_states = chunk_initial_states.view(num_chunks * B, self.num_heads, d_head)
+            chunk_initial_states = chunk_initial_states.view(
+                num_chunks * batch, self.num_heads, d_head
+            )
 
         if initial_state is not None:
             # Use provided initial state for first chunk only
@@ -745,36 +755,36 @@ class ParallelRNNTrainer(nn.Module):
                 h0 = (
                     h0.unsqueeze(0)
                     .expand(num_chunks, -1, -1, -1)
-                    .reshape(num_chunks * B, *h0.shape[1:])
+                    .reshape(num_chunks * batch, *h0.shape[1:])
                 )
                 if chunk_initial_states.dim() == 2:
                     # Vector-state target (e.g. min_gru/min_lstm): flatten heads.
-                    h0 = h0.reshape(num_chunks * B, -1)
+                    h0 = h0.reshape(num_chunks * batch, -1)
             else:
-                h0 = h0.unsqueeze(0).expand(num_chunks, -1, -1).reshape(num_chunks * B, -1)
+                h0 = h0.unsqueeze(0).expand(num_chunks, -1, -1).reshape(num_chunks * batch, -1)
             # Override first chunk's state with provided initial state
-            chunk_initial_states[:B] = h0[:B]
+            chunk_initial_states[:batch] = h0[:batch]
 
         chunk_state = RNNState(hidden=chunk_initial_states)
         chunk_output, chunk_final_state = rnn_layer.forward(chunked_input, chunk_state)  # type: ignore[misc]
 
-        layer_output = _reshape_from_chunks(chunk_output, B, padded_T, num_chunks)
+        layer_output = _reshape_from_chunks(chunk_output, batch, padded_len, num_chunks)
 
         if chunk_final_state.hidden.dim() == 2:
             # [M*B, D] -> reshape to [M, B, D] -> take last [B, D]
-            final_hidden = chunk_final_state.hidden.view(num_chunks, B, -1)[-1]  # [B, D]
+            final_hidden = chunk_final_state.hidden.view(num_chunks, batch, -1)[-1]  # [B, D]
         else:
             # [M*B, H, D_head] -> reshape to [M, B, H, D_head] -> take last [B, H, D_head]
             final_hidden = chunk_final_state.hidden.view(
-                num_chunks, B, *chunk_final_state.hidden.shape[1:]
+                num_chunks, batch, *chunk_final_state.hidden.shape[1:]
             )[-1]
 
         final_state = RNNState(
             hidden=final_hidden,
-            extra=_unchunk_extra(chunk_final_state.extra, num_chunks, B),
+            extra=_unchunk_extra(chunk_final_state.extra, num_chunks, batch),
         )
 
-        return layer_output[:, :T, :], final_state
+        return layer_output[:, :seq_len, :], final_state
 
     def _run_m2rnn_layer_parallel(
         self,
@@ -801,7 +811,7 @@ class ParallelRNNTrainer(nn.Module):
         Returns:
             Tuple of (layer output [B, T, D], final state for this layer).
         """
-        B, T, _ = layer_input.shape
+        batch, seq_len, _ = layer_input.shape
         num_heads = getattr(rnn_layer, "num_heads", self.num_heads)
         # Ask the layer for its own state geometry so M2RNN's [H, K, V] and
         # HOPE's stacked [H, 5, N, N] both work without a type check here.
@@ -821,7 +831,9 @@ class ParallelRNNTrainer(nn.Module):
                 f"but the wrapper was told {num_heads}"
             )
 
-        chunked_input, num_chunks, C, padded_T = _reshape_for_chunks(layer_input, self.chunk_size)
+        chunked_input, num_chunks, _chunk_len, padded_len = _reshape_for_chunks(
+            layer_input, self.chunk_size
+        )
 
         # Chunk 0's init comes from the layer itself, not the translator. Which
         # tensor that is depends on the target: a matrix target that seeds its
@@ -836,7 +848,7 @@ class ParallelRNNTrainer(nn.Module):
                 raise TypeError(f"{type(rnn_layer).__name__} must implement init_state")
             # init_state returns the batched [B, *mem_shape] state; boundaries
             # carry a chunk axis, so insert it to concatenate.
-            first_chunk_state = init(B, layer_input.device).hidden
+            first_chunk_state = init(batch, layer_input.device).hidden
             if first_chunk_state.shape[1:] != torch.Size(mem_shape):
                 raise ValueError(
                     f"{type(rnn_layer).__name__}.init_state gave "
@@ -845,12 +857,14 @@ class ParallelRNNTrainer(nn.Module):
                 )
         else:
             first_chunk_state = torch.zeros(
-                B, *mem_shape, device=boundary_states.device, dtype=boundary_states.dtype
+                batch, *mem_shape, device=boundary_states.device, dtype=boundary_states.dtype
             )
         all_boundaries = torch.cat([first_chunk_state.unsqueeze(1), boundary_states], dim=1)
 
         # [B, M, *mem_shape] -> [M, B, *mem_shape] -> [M*B, *mem_shape]
-        chunk_initial_states = all_boundaries.transpose(0, 1).reshape(num_chunks * B, *mem_shape)
+        chunk_initial_states = all_boundaries.transpose(0, 1).reshape(
+            num_chunks * batch, *mem_shape
+        )
 
         cache_key = "conv_cache" if self.target_type == "m2rnn" else "q"
         chunk_cache: torch.Tensor | None = None
@@ -862,7 +876,7 @@ class ParallelRNNTrainer(nn.Module):
                     chunk_cache = (
                         provided.unsqueeze(0)
                         .expand(num_chunks, -1, *([-1] * (provided.dim() - 1)))
-                        .reshape(num_chunks * B, *provided.shape[1:])
+                        .reshape(num_chunks * batch, *provided.shape[1:])
                     )
 
             h0 = initial_state[layer_idx].hidden
@@ -874,15 +888,15 @@ class ParallelRNNTrainer(nn.Module):
             h0_expanded = (
                 h0.unsqueeze(0)
                 .expand(num_chunks, -1, *([-1] * (h0.dim() - 1)))
-                .reshape(num_chunks * B, *mem_shape)
+                .reshape(num_chunks * batch, *mem_shape)
             )
-            chunk_initial_states[:B] = h0_expanded[:B]
+            chunk_initial_states[:batch] = h0_expanded[:batch]
             if chunk_cache is not None:
                 extra = initial_state[layer_idx].extra
                 if extra is not None:
                     provided = extra.get(cache_key)
                     if provided is not None:
-                        chunk_cache[:B] = provided
+                        chunk_cache[:batch] = provided
 
         extra = {cache_key: chunk_cache} if chunk_cache is not None else None
         chunk_state = RNNState(hidden=chunk_initial_states, extra=extra)
@@ -905,15 +919,15 @@ class ParallelRNNTrainer(nn.Module):
             chunked_input, chunk_state, **target_kwargs
         )
 
-        layer_output = _reshape_from_chunks(chunk_output, B, padded_T, num_chunks)
+        layer_output = _reshape_from_chunks(chunk_output, batch, padded_len, num_chunks)
 
-        final_hidden = chunk_final_state.hidden.view(num_chunks, B, *mem_shape)[-1]
+        final_hidden = chunk_final_state.hidden.view(num_chunks, batch, *mem_shape)[-1]
 
-        final_extra = _unchunk_extra(chunk_final_state.extra, num_chunks, B)
+        final_extra = _unchunk_extra(chunk_final_state.extra, num_chunks, batch)
 
         final_state = RNNState(hidden=final_hidden, extra=final_extra)
 
-        return layer_output[:, :T, :], final_state
+        return layer_output[:, :seq_len, :], final_state
 
     def get_boundary_states(self, x: torch.Tensor) -> list[torch.Tensor]:
         """Get translated boundary states for all layers for inspection."""
@@ -923,15 +937,16 @@ class ParallelRNNTrainer(nn.Module):
             and x.shape[-1] != self.hidden_dim
         ):
             x = self.input_proj(x)
-        B, T, _ = x.shape
-        num_chunks = (T + self.chunk_size - 1) // self.chunk_size
+        batch, seq_len, _ = x.shape
+        num_chunks = (seq_len + self.chunk_size - 1) // self.chunk_size
         # Aligned with forward: chunk m starts from the scanner state before
         # its first token.
         boundary_indices = [m * self.chunk_size - 1 for m in range(1, num_chunks)]
 
         if not boundary_indices:
             return [
-                torch.empty(B, 0, self.hidden_dim, device=x.device) for _ in range(self.num_layers)
+                torch.empty(batch, 0, self.hidden_dim, device=x.device)
+                for _ in range(self.num_layers)
             ]
 
         boundary_states_per_layer = []

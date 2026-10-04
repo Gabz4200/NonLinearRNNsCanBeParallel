@@ -154,32 +154,32 @@ class LongSequenceInductionDataset(Dataset):
     def __getitem__(self, index: int) -> LongSequenceSample:
         rng = self._rng_for_index(index)
 
-        # Generate patterns: list of (A, B) pairs
+        # Generate patterns: list of (pattern_a, pattern_b) pairs
         patterns = []
         for _ in range(self.num_patterns):
-            A = rng.integers(
+            pattern_a = rng.integers(
                 self.first_content_token,
                 self.last_content_token + 1,
                 size=self.pattern_len,
                 dtype=np.int64,
             )
-            B = rng.integers(
+            pattern_b = rng.integers(
                 self.first_content_token,
                 self.last_content_token + 1,
                 size=self.pattern_len,
                 dtype=np.int64,
             )
-            patterns.append((A, B))
+            patterns.append((pattern_a, pattern_b))
 
         # Build sequence: BOS + A1+B1 + A2+B2 + ... + An + [MASK] + Bn
         seq = [self.bos_token]
-        for A, B in patterns[:-1]:
-            seq.extend(A)
-            seq.extend(B)
+        for pattern_a, pattern_b in patterns[:-1]:
+            seq.extend(pattern_a)
+            seq.extend(pattern_b)
 
         # Last pattern: A + MASK
-        A_last, B_last = patterns[-1]
-        seq.extend(A_last)
+        last_a, last_b = patterns[-1]
+        seq.extend(last_a)
         seq.append(self.mask_token)
 
         seq_len = len(seq)
@@ -190,7 +190,7 @@ class LongSequenceInductionDataset(Dataset):
 
         # Labels: predict B at mask position
         labels = torch.full((self.seq_len,), -100, dtype=torch.long)
-        labels[seq_len - 1] = B_last[0]  # Predict first token of B
+        labels[seq_len - 1] = last_b[0]  # Predict first token of B
 
         return LongSequenceSample(input_ids=input_ids, labels=labels, task_type="induction")
 

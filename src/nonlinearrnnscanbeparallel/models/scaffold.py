@@ -7,16 +7,17 @@ It is separate from the target RNN and discarded at inference.
 from __future__ import annotations
 
 import math
+from abc import ABC, abstractmethod
 
 import torch
-import torch.nn.functional as F
+import torch.nn.functional as functional
 from torch import nn
 
 from .base import RMSNorm
 from .minimal import minimal_candidate, minimal_log_candidate, parallel_scan_log, per_head_linear
 
 
-class ScaffoldBase(nn.Module):
+class ScaffoldBase(nn.Module, ABC):
     """Structural protocol for scaffold modules.
 
     Any scaffold maps a layer input [B, T, D] to prefix-summary states
@@ -49,8 +50,9 @@ class ScaffoldBase(nn.Module):
     def _add_positional(self, x: torch.Tensor) -> torch.Tensor:
         return x + self.positional_encoding(x.shape[1], x.shape[2], x.device, x.dtype).unsqueeze(0)
 
+    @abstractmethod
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        raise NotImplementedError
+        """Map a layer input [B, T, D] to causally-derived prefix states [B, T, S]."""
 
 
 class MinGRUScaffold(ScaffoldBase):
@@ -141,8 +143,8 @@ class MinGRUScaffold(ScaffoldBase):
 
         # Use log-space scan for numerical stability (matching minGRU implementation)
         # log_coeffs = log(1 - z), log_values = log(z * candidate) + log(h_prev)
-        log_update = -F.softplus(-update)  # log(z)
-        log_one_minus_update = -F.softplus(update)  # log(1 - z)
+        log_update = -functional.softplus(-update)  # log(z)
+        log_one_minus_update = -functional.softplus(update)  # log(1 - z)
         log_candidate = minimal_log_candidate(candidate)  # log(candidate)
 
         # Initial state is zeros -> approximate with large negative number
@@ -237,9 +239,9 @@ class MinLSTMScaffold(ScaffoldBase):
         x_proj = self.input_proj(x_norm)
         forget, input_gate, candidate = self._project(x_proj)
 
-        diff = F.softplus(-forget) - F.softplus(-input_gate)
-        log_forget = -F.softplus(diff)
-        log_input = -F.softplus(-diff)
+        diff = functional.softplus(-forget) - functional.softplus(-input_gate)
+        log_forget = -functional.softplus(diff)
+        log_input = -functional.softplus(-diff)
         log_candidate = minimal_log_candidate(candidate)
 
         batch, seq_len, num_heads, head_dim = forget.shape

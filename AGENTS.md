@@ -61,9 +61,9 @@ uv run pytest
 aislop scan .
 ```
 
-- Focused iteration: `uv run pytest tests/test_parallel_wrapper.py` or `uv run pytest -k "<name>"`. Full suite before delivery (~80s, 120 tests).
+- Focused iteration: `uv run pytest tests/test_parallel_wrapper.py` or `uv run pytest -k "<name>"`. Full suite before delivery (~65s, 244 tests).
 - `aislop scan .` uses the global `aislop` binary (not a project dependency). Fix errors and fixable warnings; don't edit `.aislop/` config without user consent.
-- **Known baseline**: `ruff check` currently reports ~34 pre-existing N806/N812/N803 findings (ML shape unpacking `B, T, D` and `import torch.nn.functional as F` vs pep8-naming), and `pyrefly check` reports ~14 pre-existing errors. Do not mass-rename unrelated code to silence them. Fix findings in code you touch; introduce no new ones.
+- `ruff check` and `pyrefly check` are both at zero findings. Keep them there — do not reintroduce shape-unpacking names that trip pep8-naming (`B, T, D`, `import torch.nn.functional as F`).
 
 ### Pre-commit (`fail_fast: true` — first failing hook skips the rest)
 
@@ -75,7 +75,7 @@ SKIP=kaggle-dataset-upload uv run pre-commit run --all-files  # no Kaggle side e
 Hooks in order: file hygiene (whitespace, EOF, yaml, large files) → `ruff --fix` + `ruff-format` → jupytext `--sync --pre-commit` → pytest suite (`uv run --no-sync pytest -q`, ~3 min) → aislop → kaggle-dataset-upload (last; uploads the repo as `gabrielsamaral/nonlinear-rnns-can-be-parallel`, exits 0 without creds).
 
 - **Known**: ruff hook stays pinned at `v0.6.9` (differs from project ruff `0.16.7`) — do not bump it, that rewrites unrelated files. Only chase pre-commit failures you introduce; revert unrelated churn.
-- No pyrefly hook: `pyrefly check` exits 1 on the ~14 pre-existing baseline errors and would block every commit. Add it once the baseline is zero.
+- No pyrefly hook: `pyrefly check` is at zero findings and should stay that way. Add a hook for it once you can confirm it is green on an untouched checkout.
 - Slow commit? `SKIP=pytest suite` skips just the suite for a WIP commit; the Quality gates above remain the delivery bar.
 - Notebook edits: keep `notebooks/*.py` as jupytext percent scripts; after edits run `uv run --no-sync jupytext --sync notebooks/*.py` (the hook only syncs staged pairs).
 

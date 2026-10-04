@@ -5,7 +5,7 @@ from __future__ import annotations
 import lightning as pl
 import torch
 from torch import nn
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Dataset
 
 from nonlinearrnnscanbeparallel.models.parallel_wrapper import get_cosine_schedule_with_warmup
 from nonlinearrnnscanbeparallel.tasks.graph_reachability import (
@@ -21,6 +21,23 @@ class _FixedBackbone(nn.Module):
 
     def forward(self, x: torch.Tensor, state=None):
         return self.output(x), None
+
+
+class _SampleDataset(Dataset[dict[str, torch.Tensor]]):
+    """A fixed list of samples, so the loader path is a plain Dataset.
+
+    Passing the raw list works at runtime but is not a ``Dataset``, which the
+    DataLoader signature requires.
+    """
+
+    def __init__(self, samples: list[dict[str, torch.Tensor]]) -> None:
+        self.samples = samples
+
+    def __len__(self) -> int:
+        return len(self.samples)
+
+    def __getitem__(self, index: int) -> dict[str, torch.Tensor]:
+        return self.samples[index]
 
 
 def test_bptt_validation_reports_aligned_answer_metrics() -> None:
@@ -50,7 +67,7 @@ def test_bptt_validation_reports_aligned_answer_metrics() -> None:
             "reachability_label": torch.tensor(1),
         },
     ]
-    loader = DataLoader(samples, batch_size=2)
+    loader = DataLoader(_SampleDataset(samples), batch_size=2)
     metrics_callback = MetricsCallback()
     trainer = pl.Trainer(
         accelerator="cpu",
@@ -100,7 +117,7 @@ def test_metrics_callback_records_fit_epochs_once() -> None:
             "reachability_label": torch.tensor(1),
         },
     ]
-    loader = DataLoader(samples, batch_size=2)
+    loader = DataLoader(_SampleDataset(samples), batch_size=2)
     metrics_callback = MetricsCallback()
     trainer = pl.Trainer(
         max_epochs=1,

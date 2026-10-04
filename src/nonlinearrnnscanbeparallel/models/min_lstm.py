@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import torch
-import torch.nn.functional as F
+import torch.nn.functional as functional
 from torch import nn
 
 from .base import RMSNorm, RNNState, RNNStateList, SequentialRNNModel
@@ -72,9 +72,9 @@ class MinLSTMLayer(nn.Module):
         h_prev = state.hidden
         if h_prev.dim() == 2:
             h_prev = h_prev.view(x.shape[0], self.num_heads, self.head_dim)
-        diff = F.softplus(-forget) - F.softplus(-input_gate)
-        log_forget = -F.softplus(diff)
-        log_input = -F.softplus(-diff)
+        diff = functional.softplus(-forget) - functional.softplus(-input_gate)
+        log_forget = -functional.softplus(diff)
+        log_input = -functional.softplus(-diff)
         log_h0 = h_prev.unsqueeze(1).log()
         log_candidate = minimal_log_candidate(candidate)
         log_values = torch.cat([log_h0, log_input + log_candidate], dim=1)

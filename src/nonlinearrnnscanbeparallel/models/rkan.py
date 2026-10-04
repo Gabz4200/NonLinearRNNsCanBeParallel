@@ -18,7 +18,7 @@ from __future__ import annotations
 import math
 
 import torch
-import torch.nn.functional as F
+import torch.nn.functional as functional
 from torch import nn
 
 from .base import RMSNorm
@@ -69,12 +69,12 @@ class JacobiPolynomial(nn.Module):
     @property
     def alpha(self) -> torch.Tensor:
         """Effective α = ELU(α_raw), guaranteed > -1."""
-        return F.elu(self.alpha_raw)
+        return functional.elu(self.alpha_raw)
 
     @property
     def beta(self) -> torch.Tensor:
         """Effective β = ELU(β_raw), guaranteed > -1."""
-        return F.elu(self.beta_raw)
+        return functional.elu(self.beta_raw)
 
     def coefficients(self, alpha: torch.Tensor, beta: torch.Tensor) -> torch.Tensor:
         """Coefficients of the Jacobi polynomial expansion.
@@ -174,7 +174,7 @@ class RationalMapping(nn.Module):
     @property
     def iota(self) -> torch.Tensor:
         """Positive ι via SoftPlus, per the paper."""
-        return F.softplus(self.iota_raw)
+        return functional.softplus(self.iota_raw)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Map x ∈ Ω to [-1, 1]."""

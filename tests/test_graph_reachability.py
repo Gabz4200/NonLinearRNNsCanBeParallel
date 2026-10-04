@@ -2,12 +2,28 @@
 
 from __future__ import annotations
 
+from typing import TypedDict
+
 import pytest
 
 from nonlinearrnnscanbeparallel.data.graph_reachability import (
     GraphReachabilityConfig,
     GraphReachabilityDataset,
 )
+
+
+class GraphReachabilityConfigOverrides(TypedDict, total=False):
+    """The subset of config fields the validation cases below override."""
+
+    num_samples: int
+    min_nodes: int
+    max_nodes: int
+    edge_prob: float
+    vocab_size: int
+    max_seq_len: int
+    val_split: float
+    test_split: float
+    num_workers: int
 
 
 def test_dataset_answer_token_present() -> None:
@@ -64,11 +80,10 @@ def test_dataset_reachability_label_matches_answer() -> None:
 
     for i in range(len(ds)):
         item = ds[i]
-        answer_pos = (item["input_ids"] == 9).nonzero(as_tuple=True)[0]
+        answer_pos = (item["input_ids"] == 9).nonzero(as_tuple=True)[0].tolist()
         assert len(answer_pos) == 1
-        pos = answer_pos[0].item()
         # labels has -100 everywhere except at answer position
-        assert item["labels"][pos] == item["reachability_label"].item()
+        assert item["labels"][answer_pos[0]] == item["reachability_label"].item()
 
 
 def test_dataset_balanced_classes() -> None:
@@ -135,6 +150,8 @@ def test_when_all_candidates_are_overlong_generation_fails_finite() -> None:
         ({"test_split": 1.0}, "test_split"),
     ],
 )
-def test_invalid_dataset_config_fails_fast(updates: dict[str, object], message: str) -> None:
+def test_invalid_dataset_config_fails_fast(
+    updates: GraphReachabilityConfigOverrides, message: str
+) -> None:
     with pytest.raises(ValueError, match=message):
         GraphReachabilityConfig(**updates)

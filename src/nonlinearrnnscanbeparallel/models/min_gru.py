@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import torch
-import torch.nn.functional as F
+import torch.nn.functional as functional
 from torch import nn
 
 from .base import RMSNorm, RNNState, RNNStateList, SequentialRNNModel
@@ -65,8 +65,8 @@ class MinGRULayer(nn.Module):
         if h_prev.dim() == 2:
             h_prev = h_prev.view(x.shape[0], self.num_heads, self.head_dim)
         log_h0 = h_prev.unsqueeze(1).log()
-        log_update = -F.softplus(-update)
-        log_coeffs = -F.softplus(update)
+        log_update = -functional.softplus(-update)
+        log_coeffs = -functional.softplus(update)
         log_candidate = minimal_log_candidate(candidate)
         log_values = torch.cat([log_h0, log_update + log_candidate], dim=1)
 

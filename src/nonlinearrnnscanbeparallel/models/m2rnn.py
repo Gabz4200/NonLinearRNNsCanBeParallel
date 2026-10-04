@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
+import torch.nn.functional as functional
 
 from .base import RMSNorm, RNNState, RNNStateList, SequentialRNNModel
 from .mlp_rnn import FeedForwardSublayer
@@ -91,7 +91,7 @@ class DepthwiseConv1d(nn.Module):
         if conv_cache is not None:
             x_t = torch.cat([conv_cache, x_t], dim=-1)
         else:
-            x_t = F.pad(x_t, (self.kernel_size - 1, 0))
+            x_t = functional.pad(x_t, (self.kernel_size - 1, 0))
 
         # New cache = last (kernel_size-1) tokens of the *padded input*
         # (needed for next chunk's causal conv)
