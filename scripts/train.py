@@ -76,7 +76,7 @@ from nonlinearrnnscanbeparallel.tasks.graph_reachability import (
     MetricsCallback,
 )
 from nonlinearrnnscanbeparallel.tasks.language_modeling import BPTTLMTask, LMLightningTask
-from nonlinearrnnscanbeparallel.training.engine import create_trainer
+from nonlinearrnnscanbeparallel.training.engine import create_trainer, trainer_callbacks
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
@@ -311,11 +311,10 @@ def _run_one(
     )
 
     trainer_cfg["gradient_clip_val"] = clip_val
-    trainer = create_trainer(trainer_cfg)
     metric_cb = MetricsCallback()
-    extra = [cb for cb in (clip_cb, metric_cb) if cb is not None]
-    if extra:
-        trainer.callbacks.extend(extra)
+    trainer = create_trainer(
+        trainer_cfg, extra_callbacks=[cb for cb in (clip_cb, metric_cb) if cb is not None]
+    )
 
     start = time.time()
     trainer.fit(lit_task, datamodule=datamodule)
@@ -323,7 +322,11 @@ def _run_one(
 
     metrics = {k: float(v) for k, v in trainer.callback_metrics.items()}
     best_ckpt = next(
-        (cb.best_model_path for cb in trainer.callbacks if isinstance(cb, ModelCheckpoint)),
+        (
+            cb.best_model_path
+            for cb in trainer_callbacks(trainer)
+            if isinstance(cb, ModelCheckpoint)
+        ),
         "",
     )
     result = {

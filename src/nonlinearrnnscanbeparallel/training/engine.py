@@ -38,8 +38,16 @@ def _iter_callback_flags(callbacks_cfg: object) -> list[tuple[str, bool]]:
     return []
 
 
-def create_trainer(cfg: dict[str, Any]) -> lightning.Trainer:
-    """Create a Lightning Trainer from config."""
+def create_trainer(
+    cfg: dict[str, Any], extra_callbacks: list[Callback] | None = None
+) -> lightning.Trainer:
+    """Create a Lightning Trainer from config.
+
+    ``extra_callbacks`` are appended to the config-driven ones and must be
+    supplied here rather than appended to ``Trainer.callbacks`` afterwards:
+    Lightning reads the callback list during ``fit()``, so a late mutation is
+    not honoured.
+    """
     callbacks: list[Callback] = []
 
     for name, enabled in _iter_callback_flags(cfg.get("callbacks", {})):
@@ -48,6 +56,9 @@ def create_trainer(cfg: dict[str, Any]) -> lightning.Trainer:
         factory = CALLBACKS.get(name)
         if factory is not None:
             callbacks.append(factory())
+
+    if extra_callbacks:
+        callbacks.extend(cb for cb in extra_callbacks if cb is not None)
 
     return lightning.Trainer(
         accelerator=cfg.get("accelerator", "auto"),
@@ -60,3 +71,14 @@ def create_trainer(cfg: dict[str, Any]) -> lightning.Trainer:
         callbacks=callbacks,
         fast_dev_run=cfg.get("fast_dev_run", False),
     )
+
+
+def trainer_callbacks(trainer: lightning.Trainer) -> list[Callback]:
+    """The Trainer's effective callback list, as a plain typed list.
+
+    ``Trainer.callbacks`` is real at runtime but absent from the published
+    stubs, so reading it directly is an error at every use site. ``getattr``
+    is what ruff's B009 exists to flag, so the deliberate escape hatch is the
+    ``noqa``.
+    """
+    return list(getattr(trainer, "callbacks"))  # noqa: B009
