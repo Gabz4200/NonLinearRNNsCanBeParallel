@@ -1,8 +1,12 @@
-"""RNN step operation reference implementation.
+"""RNN step reference implementation.
 
-This is the default PyTorch reference for a single RNN step.
-When Taichi backend is requested, the implementation raises NotImplementedError
-until a kernel body is explicitly provided.
+The default PyTorch path for a single RNN step. It is the correctness oracle
+that any accelerated backend must reproduce: :mod:`ops.rnn_step_impls` selects
+between this and the Taichi kernel, and the parity test compares them.
+
+The layer must expose ``step``; this module does not emulate ``forward`` for a
+layer that lacks it, because doing so would silently accept a layer whose step
+semantics are undefined.
 """
 
 from __future__ import annotations
@@ -18,21 +22,26 @@ def rnn_step_reference(
     h_prev: torch.Tensor,
     rnn_layer: nn.Module,
 ) -> torch.Tensor:
-    """
-    Single RNN step reference implementation.
+    """Advance one token through a multi-head RNN layer.
 
     Args:
-        x: Input tensor [B, D]
-        h_prev: Previous hidden state [B, H, D_head]
-        rnn_layer: MultiHeadRNNLayer module
+        x: Input token, [B, D].
+        h_prev: Previous per-head state, [B, H, D_head].
+        rnn_layer: A layer exposing ``step(x_t, RNNState)``.
 
     Returns:
-        New hidden state [B, H, D_head]
+        The updated per-head state, [B, H, D_head]. This is the recurrent
+        state only; the layer's layer-output (``x_t + projected``) is the
+        caller's to keep, exactly as in the model protocol.
     """
-    # The cell protocol is sequence-shaped, so a step is a length-1 forward.
-    state = [RNNState(hidden=h_prev)]
-    _, new_states = rnn_layer(x.unsqueeze(1), state)
-    return new_states[0].hidden
+    step = getattr(rnn_layer, "step", None)
+    if not callable(step):
+        raise TypeError(
+            f"{type(rnn_layer).__name__} has no step(); the single-token op "
+            "requires a layer that implements the model protocol"
+        )
+    new_state = step(x, RNNState(hidden=h_prev))[1]
+    return new_state.hidden
 
 
 class RNNStepReference:

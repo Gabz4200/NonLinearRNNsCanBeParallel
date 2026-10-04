@@ -111,6 +111,20 @@ class MultiHeadRNNLayer(nn.Module):
         self.output_proj = nn.Linear(hidden_dim, hidden_dim, bias=False)
         self.dropout = nn.Dropout(dropout)
 
+    def train(self, mode: bool = True) -> MultiHeadRNNLayer:
+        """Propagate train/eval to the head skeletons.
+
+        ``self.heads`` are meta modules executed through ``functional_call``,
+        which does not consult their own ``training`` flag: it uses whatever
+        mode they were left in. Left in the default train mode they apply a
+        live dropout mask on every token, even in ``eval()``, which made
+        ``step()`` nondeterministic and inference irreproducible.
+        """
+        super().train(mode)
+        for head in self.heads:
+            head.train(mode)
+        return self
+
     def _recur(
         self,
         params: dict[str, torch.Tensor],
