@@ -1,0 +1,77 @@
+defaults:
+  - model: nano_hope_tiny
+  - trainer_lm
+  - parallel
+  - _self_
+
+# HOPE tiny LM: mixed corpus (Wikipedia + TinyStoriesInstruct),
+# parallel vs BPTT parity.  HOPE mixer (mem_dim 16) on a 2-layer
+# nano_rnn skeleton; fits a CPU box.
+#
+# task is mixed_lm (not openthoughts_lm) so the datamodule reads
+# its keys with cfg.get() and tolerates CLI overrides such as
+# data.num_samples=8; the OpenThoughts module builds a strict
+# dataclass and would reject that key with a TypeError.
+task: mixed_lm
+
+# Models in the run: nano_rnn (mixer selected via model.mixer_type).
+# NOTE: `models:` holds REGISTRY names resolved by get_model() in
+# scripts/train.py -- not Hydra preset names.  The architecture is
+# picked by the `model:` default above (nano_hope_tiny sets
+# mixer_type: hope); writing a preset name here fails with
+# "Model '...' not registered".
+models:
+  - nano_rnn
+
+# Training modes to run: parallel | bptt (one or both).
+modes:
+  - parallel
+  - bptt
+
+fast_dev_run: false
+
+# 8 samples per source, 64-token blocks, batch 2 -> a couple of
+# steps per epoch; 1 epoch keeps the tiny run quick on CPU.
+# num_samples is declared so `data.num_samples=N` is a valid CLI
+# override; mixed_lm sizes its stream from data.sources, so the
+# key is a no-op here (the strict-datamodule tasks read it).
+data:
+  num_samples: 8
+  block_size: 64
+  max_seq_len: 64
+  batch_size: 2
+  num_workers: 0
+  val_split: 0.2
+  test_split: 0.2
+  sources:
+    - name: wikipedia
+      dataset_name: "wikimedia/wikipedia"
+      subsets: ["20231101.en"]
+      dataset_split: "train"
+      articles_per_subset: 8
+      subset_seed: 42
+      max_article_tokens: 1024
+    - name: tinystories_instruct
+      dataset_name: "roneneldan/TinyStoriesInstruct"
+      dataset_split: "train"
+      subset_num_samples: 8
+      subset_seed: 42
+
+# Chunk 16 < block 64 so the scaffold/translator path genuinely
+# engages (chunk_size >= seq_len falls back to single-chunk
+# sequential and warns).  Scaffold dim must be divisible by
+# model.num_heads (4 for nano_hope_tiny).
+parallel:
+  chunk_size: 16
+  scaffold_dim: 64
+
+trainer:
+  max_epochs: 1
+  precision: "32-true"
+  log_every_n_steps: 1
+  gradient_clip_val: 1.0
+  accumulate_grad_batches: 1
+
+callbacks:
+  model_checkpoint: false
+  early_stopping: false
