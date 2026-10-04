@@ -20,7 +20,7 @@ class ReferenceOp:
 
 
 class BackendOp:
-    """Backend implementation (Taichi) - raises until kernel is provided."""
+    """Taichi-backed implementation; the kernel lives in ``kernels.taichi.rnn_step``."""
 
     def __init__(self) -> None:
         from nonlinearrnnscanbeparallel.kernels.taichi.runtime import ensure_initialized
@@ -36,7 +36,15 @@ class BackendOp:
 
 
 def build_op(backend: str) -> Any:
-    """Build op implementation for given backend."""
+    """Build the op implementation for a named backend.
+
+    Raises:
+        ValueError: ``backend`` names no known implementation. Silently
+            falling back to the reference would hide a typo behind numbers
+            that look like a working kernel run.
+    """
     if backend == "taichi":
         return BackendOp()
-    return ReferenceOp()
+    if backend == "reference":
+        return ReferenceOp()
+    raise ValueError(f"Unknown rnn_step backend '{backend}'. Valid: 'taichi', 'reference'")

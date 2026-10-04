@@ -84,7 +84,7 @@ Deviations from the paper, all deliberate and local:
     starts at ``alpha_init``.  A plain sigmoid at zero would give ``alpha =
     0.5`` and halve the memory every token.
   - Continuum Memory levels are applied to the retrieved output, with level
-    ``l`` refreshed once per ``cms_period * (l + 1)`` tokens.  The paper's
+    ``l`` read at lags ``period * 2^l`` and its multiples.  The paper's
     periodic in-loop *parameter* update (its Eq. 71 schedule) is deliberately
     not implemented: it would mutate parameters between autograd graph
     traversals and fight the outer optimizer.
@@ -216,15 +216,11 @@ class HOPELayer(nn.Module):
         for name in HOPE_MEMORIES:
             nn.init.normal_(getattr(self, f"{name}_memory"), mean=0.0, std=0.02)
 
-    def state_shape(self) -> tuple[int, int, int]:
-        """``(H, N, N)`` of one memory."""
-        return (self.num_heads, self.mem_dim, self.mem_dim)
-
     def stacked_state_shape(self) -> tuple[int, int, int, int]:
         """``(H, num_memories, N, N)``: the layer's full state geometry.
 
-        The parallel wrapper and translator size themselves from this, since
-        :meth:`state_shape` describes only a single memory.
+        The parallel wrapper and translator size themselves from this; a single
+        memory is only ``(H, N, N)``, which is not the layer state.
         """
         return (self.num_heads, len(HOPE_MEMORIES), self.mem_dim, self.mem_dim)
 
@@ -361,8 +357,6 @@ class HOPELayer(nn.Module):
         lag_max = self._cms_lag_max()
         width = o_t.shape[-1]
         empty = o_t.new_zeros(o_t.shape[0], 0, width)
-        if self.num_cms_levels < 1 or self.cms_taps < 1:
-            return o_t, empty
         buffer = cache if cache is not None and lag_max > 0 else empty
         y = o_t
         for level, layer in enumerate(self.cms_layers):
@@ -551,7 +545,12 @@ class HOPE(SequentialRNNModel):
         self.classifier = nn.Linear(hidden_dim, num_classes, bias=False)
 
     def init_state(self, batch_size: int, device: torch.device) -> RNNStateList:
-        """Per-layer zero memories and conv caches."""
+        """Per-layer states from each layer's own ``init_state``.
+
+        Memories are seeded from the learned matrices, not zeros; see
+        :meth:`HOPELayer.init_state` for why a zero start kills the
+        self-referential gradient chain.
+        """
         return RNNStateList(
             [layer_pair[0].init_state(batch_size, device) for layer_pair in self.layers]
         )

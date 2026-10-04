@@ -30,6 +30,7 @@ training-mode layer instead of quietly returning an unmasked result that
 silently disagrees with the reference.
 """
 
+from dataclasses import dataclass
 from typing import Any, cast
 
 import torch
@@ -42,35 +43,23 @@ from .runtime import ensure_initialized
 _KERNEL_CACHE: dict[tuple[Any, ...], Any] = {}
 
 
-def _head_topology(layer: nn.Module) -> list[tuple[int, int, bool]]:
+def _head_topology(heads: list[nn.Module]) -> list[tuple[int, int, bool]]:
     """Return the per-layer (in_features, out_features, has_bias) of the head.
 
     Walks the meta skeleton in order, so any depth, any hidden width, and
     optional biases are described rather than assumed.
 
     Raises:
-        TypeError: the module is not a multi-head RNN layer.
         ValueError: the head is not a plain Linear stack of the form
             ``[Linear, act, (act, Linear)*]`` -- i.e. the concatenation of
             ``[h_prev, x_t]`` followed by Linear layers with SiLU in between.
             Dropout layers are tolerated and skipped, since the kernel is
             inference-only and never applies them.
     """
-    try:
-        heads = list(layer.heads)  # type: ignore[attr-defined]
-        int(layer.num_heads)  # type: ignore[attr-defined]
-        int(layer.head_dim)  # type: ignore[attr-defined]
-        int(layer.hidden_dim)  # type: ignore[attr-defined]
-    except AttributeError as error:
-        raise TypeError(
-            "the Taichi rnn_step kernel requires a MultiHeadRNNLayer-shaped module, "
-            f"got {type(layer).__name__}"
-        ) from error
-
     if not heads:
         raise ValueError("layer has no heads")
 
-    net = heads[0].net  # type: ignore[attr-defined]
+    net: list[nn.Module] = list(heads[0].net)  # type: ignore[attr-defined]
     linears: list[nn.Linear] = []
     expect_linear = True
     for module in net:
@@ -109,14 +98,19 @@ def _head_weights(
     """Extract stacked head weights as [H, out, in], plus per-layer biases.
 
     The layer stores heads batched, so the weight tensors arrive already
-    leading-dimensioned by head. Keys are matched by module path rather than a
-    fixed stride, because whether a bias exists changes which indices are
-    present.
+    leading-dimensioned by head. The layer publishes its own head parameters
+    under the dotted names and order ``stack_module_state`` produced; keys are
+    matched by name rather than a fixed stride, because whether a bias exists
+    changes which indices are present.
     """
-    params = cast("dict[str, torch.Tensor]", layer.params)
-    weight_keys = sorted(
-        (k for k in params if k.endswith("/weight")), key=lambda k: int(k.split("/")[1])
-    )
+    head_parameters = getattr(layer, "head_parameters", None)
+    if not callable(head_parameters):
+        raise TypeError(
+            f"{type(layer).__name__} does not expose head_parameters(), so its head "
+            "weights cannot be read without re-deriving the parameter naming scheme"
+        )
+    params: dict[str, torch.Tensor] = cast("dict[str, torch.Tensor]", head_parameters())
+    weight_keys = [k for k in params if k.endswith(".weight")]
     if not weight_keys:
         raise ValueError("head has no Linear weights")
 
@@ -124,20 +118,40 @@ def _head_weights(
     biases: list[torch.Tensor | None] = []
     for layer_index, (_, _, has_bias) in enumerate(topology):
         key = weight_keys[layer_index]
-        weights.append(params[key].detach())
-        bias_key = key[: -len("weight")] + "bias"
-        biases.append(params[bias_key].detach() if has_bias and bias_key in params else None)
+        weights.append(params[key])
+        bias_key = f"{key[: -len('weight')]}bias"
+        biases.append(params[bias_key] if has_bias and bias_key in params else None)
     return weights, biases
 
 
-def _build_kernel(
-    num_heads: int,
-    head_dim: int,
-    hidden_dim: int,
-    depth: int,
-    width: int,
-    has_bias: bool,
-) -> Any:
+@dataclass(frozen=True)
+class _Geometry:
+    """Compile-time constants a Taichi kernel is specialised to.
+
+    Taichi bakes loop bounds into the compiled kernel, so these cannot vary per
+    call; grouping them keeps the cache key and the build arguments in step.
+    """
+
+    num_heads: int
+    head_dim: int
+    hidden_dim: int
+    depth: int
+    width: int
+    has_bias: bool
+
+    def cache_key(self) -> tuple[int, int, int, int, int, bool]:
+        """The compile-time constants, in a fixed order for the kernel cache."""
+        return (
+            self.num_heads,
+            self.head_dim,
+            self.hidden_dim,
+            self.depth,
+            self.width,
+            self.has_bias,
+        )
+
+
+def _build_kernel(geometry: _Geometry) -> Any:
     """Compile kernels for a head of a given depth and padded width.
 
     Taichi traces the kernel body and cannot subscript a captured Python list
@@ -150,6 +164,13 @@ def _build_kernel(
     ``2 * head_dim``, which keeps the concatenated-input reads in bounds.
     """
     import taichi as ti
+
+    num_heads = geometry.num_heads
+    head_dim = geometry.head_dim
+    hidden_dim = geometry.hidden_dim
+    depth = geometry.depth
+    width = geometry.width
+    has_bias = geometry.has_bias
 
     # Taichi reads these annotations itself: a kernel argument must be declared
     # with the call form ti.types.ndarray(...), which a type checker flags as an
@@ -259,10 +280,17 @@ def rnn_step(
     ensure_initialized()
     # Validate the module before its mode: an unsupported module should report
     # that, not the inference-only rule that only applies once it is supported.
-    topology = _head_topology(rnn_layer)
-    num_heads = int(rnn_layer.num_heads)  # type: ignore[attr-defined]
-    head_dim = int(rnn_layer.head_dim)  # type: ignore[attr-defined]
-    hidden_dim = int(rnn_layer.hidden_dim)  # type: ignore[attr-defined]
+    try:
+        heads = list(rnn_layer.heads)  # type: ignore[attr-defined]
+        num_heads = int(rnn_layer.num_heads)  # type: ignore[attr-defined]
+        head_dim = int(rnn_layer.head_dim)  # type: ignore[attr-defined]
+        hidden_dim = int(rnn_layer.hidden_dim)  # type: ignore[attr-defined]
+    except AttributeError as error:
+        raise TypeError(
+            "the Taichi rnn_step kernel requires a MultiHeadRNNLayer-shaped module, "
+            f"got {type(rnn_layer).__name__}"
+        ) from error
+    topology = _head_topology(heads)
 
     if rnn_layer.training:
         raise RuntimeError(
@@ -281,6 +309,13 @@ def rnn_step(
 
     if x.dim() != 2 or x.shape[1] != hidden_dim:
         raise ValueError(f"x must be [batch, {hidden_dim}], got {tuple(x.shape)}")
+    if x.dtype != torch.float32:
+        # Every kernel array is declared ti.f32, and Taichi raises from inside
+        # its argument mapper on a mismatch; name the constraint here instead.
+        raise ValueError(
+            f"the Taichi rnn_step kernel is float32-only, got {x.dtype}; "
+            "cast the input and the layer's parameters to float32"
+        )
     batch = int(x.shape[0])
     if h_prev.dim() == 2:
         h_prev = h_prev.view(batch, num_heads, head_dim)
@@ -298,11 +333,19 @@ def rnn_step(
     # it must cover the widest layer and the concatenated first-layer input.
     width = max([2 * head_dim, *(max(in_d, out_d) for in_d, out_d, _ in topology)])
     has_bias = any(b for _, _, b in topology)
+    geometry = _Geometry(
+        num_heads=num_heads,
+        head_dim=head_dim,
+        hidden_dim=hidden_dim,
+        depth=depth,
+        width=width,
+        has_bias=has_bias,
+    )
 
-    key = (num_heads, head_dim, hidden_dim, depth, width, has_bias, x.dtype, str(x.device))
+    key = (*geometry.cache_key(), x.dtype, str(x.device))
     kernels = _KERNEL_CACHE.get(key)
     if kernels is None:
-        kernels = _build_kernel(num_heads, head_dim, hidden_dim, depth, width, has_bias)
+        kernels = _build_kernel(geometry)
         _KERNEL_CACHE[key] = kernels
     norm_kernel, step_kernel = kernels
 

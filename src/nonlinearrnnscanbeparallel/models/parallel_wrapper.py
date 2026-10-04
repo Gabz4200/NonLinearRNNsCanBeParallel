@@ -50,12 +50,11 @@ def _layer_memory_shape(target_rnn: nn.Module) -> tuple[int, ...]:
     if not layers:
         return (16, 16)
     first = layers[0][0]
-    # Prefer the layer's full state geometry, which accounts for targets that
-    # stack several memories per head (HOPE stacks five).
-    for attr in ("stacked_state_shape", "state_shape"):
-        shape = getattr(first, attr, None)
-        if callable(shape):
-            return tuple(shape())[1:]
+    # Ask the layer for its own full state geometry, which accounts for targets
+    # that stack several memories per head (HOPE stacks five).
+    shape = getattr(first, "stacked_state_shape", None)
+    if callable(shape):
+        return tuple(shape())[1:]
     return (
         int(getattr(first, "key_dim", 16)),
         int(getattr(first, "value_dim", 16)),
@@ -815,16 +814,10 @@ class ParallelRNNTrainer(nn.Module):
         num_heads = getattr(rnn_layer, "num_heads", self.num_heads)
         # Ask the layer for its own state geometry so M2RNN's [H, K, V] and
         # HOPE's stacked [H, 5, N, N] both work without a type check here.
-        # A layer that exposes neither keeps the translator's own geometry,
+        # A layer that exposes none keeps the translator's own geometry,
         # which is the same tensor these boundaries came from.
-        mem_shape = None
-        for attr in ("stacked_state_shape", "state_shape"):
-            shape = getattr(rnn_layer, attr, None)
-            if callable(shape):
-                mem_shape = tuple(shape())
-                break
-        if mem_shape is None:
-            mem_shape = tuple(boundary_states.shape[2:])
+        shape = getattr(rnn_layer, "stacked_state_shape", None)
+        mem_shape = tuple(shape()) if callable(shape) else tuple(boundary_states.shape[2:])
         if mem_shape[0] != num_heads:
             raise ValueError(
                 f"{type(rnn_layer).__name__}.state_shape() reports {mem_shape[0]} heads "
@@ -890,13 +883,11 @@ class ParallelRNNTrainer(nn.Module):
                 .expand(num_chunks, -1, *([-1] * (h0.dim() - 1)))
                 .reshape(num_chunks * batch, *mem_shape)
             )
+            # Only chunk 0's rows come from h0; later chunks keep the
+            # translator's boundary states. The cache needs no override: it was
+            # just expanded from the caller's own tensor, so its leading rows
+            # already hold it.
             chunk_initial_states[:batch] = h0_expanded[:batch]
-            if chunk_cache is not None:
-                extra = initial_state[layer_idx].extra
-                if extra is not None:
-                    provided = extra.get(cache_key)
-                    if provided is not None:
-                        chunk_cache[:batch] = provided
 
         extra = {cache_key: chunk_cache} if chunk_cache is not None else None
         chunk_state = RNNState(hidden=chunk_initial_states, extra=extra)

@@ -125,6 +125,21 @@ class MultiHeadRNNLayer(nn.Module):
             head.train(mode)
         return self
 
+    def _functional_state(self) -> tuple[dict[str, torch.Tensor], dict[str, torch.Tensor]]:
+        """Head params and buffers under the dotted names ``functional_call`` expects."""
+        params = {self._param_names[k]: v for k, v in self.params.items()}
+        buffers = {self._buffer_names[k]: v for k, v in self.named_buffers(recurse=False)}
+        return params, buffers
+
+    def head_parameters(self) -> dict[str, torch.Tensor]:
+        """Head params under their dotted names, in head order, detached.
+
+        The Taichi kernel needs the same names and order that
+        :meth:`stack_module_state` produced, so it can index them by layer
+        without re-deriving the ``.``-to-``/`` name mangling.
+        """
+        return {name: value.detach() for name, value in self._functional_state()[0].items()}
+
     def _recur(
         self,
         params: dict[str, torch.Tensor],
@@ -144,9 +159,7 @@ class MultiHeadRNNLayer(nn.Module):
         x_norm = self.norm(x_t)
         x_heads = x_norm.view(batch, self.num_heads, self.head_dim)
 
-        params = {self._param_names[k]: v for k, v in self.params.items()}
-        named_buffers = dict(self.named_buffers(recurse=False))
-        buffers = {self._buffer_names[k]: v for k, v in named_buffers.items()}
+        params, buffers = self._functional_state()
         # Heads are the vmap batch dim: [B, H, D_head] -> [H, B, D_head].
         head_outputs = torch.vmap(self._recur, randomness="different")(
             params, buffers, h_prev.permute(1, 0, 2), x_heads.permute(1, 0, 2)
