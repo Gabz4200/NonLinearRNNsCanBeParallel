@@ -7,7 +7,6 @@ from typing import cast
 import pytest
 import torch
 
-import nonlinearrnnscanbeparallel.models  # noqa: F401
 from nonlinearrnnscanbeparallel.models.parallel_wrapper import ParallelRNNTrainer
 from nonlinearrnnscanbeparallel.models.registry import get_model
 from nonlinearrnnscanbeparallel.models.scaffold import (

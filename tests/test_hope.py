@@ -343,7 +343,6 @@ def test_when_repeated_steps_then_state_does_not_mutate_caller_input() -> None:
 
 def test_when_registered_then_hope_is_retrievable_from_the_registry() -> None:
     """`hope` resolves to the HOPE classifier model, not a stale alias."""
-    import nonlinearrnnscanbeparallel.models  # noqa: F401  (registry side effect)
 
     model = get_model(
         "hope", input_dim=32, hidden_dim=32, num_layers=1, num_heads=4, num_classes=3, mem_dim=8
@@ -374,7 +373,6 @@ def test_when_building_hope_model_then_forward_returns_class_logits() -> None:
 
 def test_when_nano_rnn_uses_hope_mixer_then_matrices_are_in_the_state() -> None:
     """NanoRNN's HOPE mixer initializes each layer from its own memories."""
-    import nonlinearrnnscanbeparallel.models  # noqa: F401
 
     model = get_model(
         "nano_rnn",
@@ -453,7 +451,6 @@ def _hope_wrapper(
     ``model_kwargs`` configure the target; ``target_chunk_size`` configures
     Eq. 90's inner chunk in the wrapper.
     """
-    import nonlinearrnnscanbeparallel.models  # noqa: F401
 
     params: dict[str, object] = {
         "input_dim": 0,
@@ -486,7 +483,6 @@ def test_when_inferring_target_type_then_hope_is_a_matrix_target() -> None:
 
 def test_when_reading_memory_shape_then_includes_the_memory_count() -> None:
     """The wrapper needs (num_memories, N, N) to size the translator."""
-    import nonlinearrnnscanbeparallel.models  # noqa: F401
 
     target = get_model(
         "nano_rnn",

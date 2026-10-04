@@ -5,7 +5,6 @@ from __future__ import annotations
 import pytest
 import torch
 
-import nonlinearrnnscanbeparallel.models  # noqa: F401
 from nonlinearrnnscanbeparallel.data.datamodule import SortedGraphConnectivityDataset
 from nonlinearrnnscanbeparallel.models.registry import get_model, list_models
 from nonlinearrnnscanbeparallel.models.rkan import RKANLayer

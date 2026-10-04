@@ -17,8 +17,6 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
 
 from generate import _best_prefix, _build_model, _strip_prefix, generate  # noqa: E402
 
-import nonlinearrnnscanbeparallel.models  # noqa: F401  (registry side effect)
-
 VOCAB = 256
 
 

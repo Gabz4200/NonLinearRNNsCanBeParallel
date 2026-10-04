@@ -32,7 +32,6 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 from _util import TRAINING_KEYS, node_dict  # noqa: E402
 from omegaconf import OmegaConf  # noqa: E402
 
-import nonlinearrnnscanbeparallel.models  # noqa: E402, F401  (registry side effect)
 from nonlinearrnnscanbeparallel.models.registry import get_model  # noqa: E402
 
 

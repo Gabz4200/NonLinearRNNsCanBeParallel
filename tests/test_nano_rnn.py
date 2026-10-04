@@ -5,7 +5,6 @@ from __future__ import annotations
 import pytest
 import torch
 
-import nonlinearrnnscanbeparallel.models  # noqa: F401
 from nonlinearrnnscanbeparallel.models.nano_rnn import MIXER_TYPES, NanoRNN
 from nonlinearrnnscanbeparallel.models.registry import get_model
 
