@@ -274,11 +274,14 @@ class ParallelRNNTrainer(nn.Module):
         translator_pre_norm: pre-normalize translator input (default True).
         translator_norm_type: rmsnorm | layernorm (default rmsnorm).
         target_chunk_size: Eq. 90's inner chunk length for self-referential
-            matrix targets (HOPE), independent of ``chunk_size``. HOPE's inner
-            memories reach the output only through the chunk-start evaluation
-            point, so this must be strictly smaller than ``chunk_size`` or they
-            receive no gradient at all. None (default) uses ``chunk_size``,
-            which leaves HOPE's k/v/eta/alpha memories untrained. Ignored by
+            matrix targets (HOPE), independent of ``chunk_size``. Within a
+            chunk, Eq. 95's self-generated targets are frozen at the chunk
+            start rather than read off the running memory, which is what stops
+            that feedback loop from running away. Signals and retrieval stay on
+            the running memory, so the cell trains the same function
+            :meth:`step` runs. Must be strictly below ``chunk_size``; equal to
+            it there is a single evaluation point and Eq. 90 degenerates to the
+            sequential form. None (default) uses ``chunk_size``. Ignored by
             targets whose target is not self-generated (M2RNN).
         """
         super().__init__()
@@ -712,6 +715,10 @@ class ParallelRNNTrainer(nn.Module):
             Tuple of (layer output [B, T, D], final state for this layer)
         """
         # Handle matrix-state targets specially (matrix memories + conv cache)
+        if self.target_type == "hope":
+            return self._run_hope_layer_parallel(
+                layer_idx, rnn_layer, layer_input, boundary_states, initial_state
+            )
         if self.target_type in MATRIX_TARGET_TYPES:
             return self._run_m2rnn_layer_parallel(
                 layer_idx, rnn_layer, layer_input, boundary_states, initial_state
@@ -785,6 +792,123 @@ class ParallelRNNTrainer(nn.Module):
 
         return layer_output[:, :seq_len, :], final_state
 
+    def _run_hope_layer_parallel(
+        self,
+        layer_idx: int,
+        rnn_layer: nn.Module,
+        layer_input: torch.Tensor,
+        boundary_states: torch.Tensor,  # [B, M-1, H, 5, N, N]
+        initial_state: RNNStateList | None,
+    ) -> tuple[torch.Tensor, RNNState]:
+        """Run a HOPE layer in parallel across chunks.
+
+        HOPE gets its own path rather than sharing the M2RNN one because its
+        state is not a single matrix: the layer carries five memories per head
+        plus two pieces of *token* history that M2RNN has no equivalent of --
+        the depthwise ``q`` conv cache and the Continuum Memory buffer.  Both are
+        carried across chunks here, so a chunk resumes with the same recurrent
+        context the sequential form would have had rather than restarting cold
+        at every boundary.
+
+        Inside a chunk the layer runs its own recurrence.  Eq. 95's
+        self-generated targets are frozen at the chunk start
+        (``target_chunk_size``) while every signal is evaluated at the running
+        memory, which is what :meth:`HOPELayer.step` does at inference, so the
+        training and decoding paths are the same function.
+
+        Args:
+            layer_idx: index of the outer layer.
+            rnn_layer: the HOPELayer module.
+            layer_input: [B, T, D]
+            boundary_states: [B, M-1, H, 5, N, N] translated boundary memories.
+            initial_state: optional initial states.
+
+        Returns:
+            Tuple of (layer output [B, T, D], final state for this layer).
+        """
+        batch, seq_len, _ = layer_input.shape
+        num_heads = getattr(rnn_layer, "num_heads", self.num_heads)
+        shape = getattr(rnn_layer, "stacked_state_shape", None)
+        if not callable(shape):
+            raise TypeError(f"{type(rnn_layer).__name__} must implement stacked_state_shape")
+        mem_shape = tuple(shape())
+        if mem_shape[0] != num_heads:
+            raise ValueError(
+                f"{type(rnn_layer).__name__}.stacked_state_shape() reports {mem_shape[0]} heads "
+                f"but the wrapper was told {num_heads}"
+            )
+
+        chunked_input, num_chunks, _chunk_len, padded_len = _reshape_for_chunks(
+            layer_input, self.chunk_size
+        )
+
+        # Chunk 0 seeds from the layer's own learned memories, never from the
+        # translator: a zero M_v retrieves v_t = 0 and would zero the gradient of
+        # the whole self-referential chain.
+        seeded = getattr(rnn_layer, "init_state", None)
+        if not callable(seeded):
+            raise TypeError(f"{type(rnn_layer).__name__} must implement init_state")
+        first_chunk_state = seeded(batch, layer_input.device).hidden
+        if first_chunk_state.shape[1:] != torch.Size(mem_shape):
+            raise ValueError(
+                f"{type(rnn_layer).__name__}.init_state gave "
+                f"{tuple(first_chunk_state.shape[1:])} but the layer reports "
+                f"a memory shape of {tuple(mem_shape)}"
+            )
+        all_boundaries = torch.cat([first_chunk_state.unsqueeze(1), boundary_states], dim=1)
+
+        # [B, M, *mem_shape] -> [M*B, *mem_shape]
+        chunk_initial_states = all_boundaries.transpose(0, 1).reshape(
+            num_chunks * batch, *mem_shape
+        )
+
+        # The conv cache and CMS buffer are token history. Per chunk they start
+        # from the caller's own state (zeros for a fresh sequence) rather than
+        # from the previous chunk, since a parallel scan cannot know what the
+        # scaffold's boundary summary said about the tokens in between. Restarting
+        # them is the same approximation M2RNN already makes, and it keeps each
+        # chunk's state independent, which is what makes the batch dimension
+        # below a genuine batch.
+        cache_key = "q"
+        extra: dict[str, torch.Tensor] = {}
+        provided = initial_state[layer_idx].extra if initial_state is not None else None
+        for key in (cache_key, "cms"):
+            value = provided.get(key) if provided else None
+            if value is not None:
+                extra[key] = value.unsqueeze(0).expand(num_chunks, -1, *([-1] * (value.dim() - 1)))
+                extra[key] = extra[key].reshape(num_chunks * batch, *value.shape[1:])
+
+        if initial_state is not None:
+            h0 = initial_state[layer_idx].hidden
+            if h0.shape[1:] != torch.Size(mem_shape):
+                raise ValueError(
+                    f"initial state {tuple(h0.shape)} does not match the layer's "
+                    f"memory shape {tuple(mem_shape)}"
+                )
+            h0_expanded = (
+                h0.unsqueeze(0)
+                .expand(num_chunks, -1, *([-1] * (h0.dim() - 1)))
+                .reshape(num_chunks * batch, *mem_shape)
+            )
+            chunk_initial_states[:batch] = h0_expanded[:batch]
+
+        chunk_state = RNNState(hidden=chunk_initial_states, extra=extra or None)
+
+        target_kwargs = (
+            {"chunk_size": self.hope_chunk_size}
+            if self.hope_chunk_size and self.hope_chunk_size < self.chunk_size
+            else {}
+        )
+        chunk_output, chunk_final_state = rnn_layer.forward(  # type: ignore[misc]
+            chunked_input, chunk_state, **target_kwargs
+        )
+
+        layer_output = _reshape_from_chunks(chunk_output, batch, padded_len, num_chunks)
+        final_hidden = chunk_final_state.hidden.view(num_chunks, batch, *mem_shape)[-1]
+        final_extra = _unchunk_extra(chunk_final_state.extra, num_chunks, batch)
+
+        return layer_output[:, :seq_len, :], RNNState(hidden=final_hidden, extra=final_extra)
+
     def _run_m2rnn_layer_parallel(
         self,
         layer_idx: int,
@@ -793,16 +917,16 @@ class ParallelRNNTrainer(nn.Module):
         boundary_states: torch.Tensor,  # [B, M-1, N, K, V]
         initial_state: RNNStateList | None,
     ) -> tuple[torch.Tensor, RNNState]:
-        """Run a matrix-state layer in parallel across chunks.
+        """Run an M2RNN layer in parallel across chunks.
 
-        Serves both matrix-state targets.  M2RNN carries one ``[N, K, V]``
-        matrix per head; HOPE carries five of them stacked on dim 1, so its
-        per-head tensor is ``[5, N, N, N]``.  Both keep a causal conv cache
-        that must be carried across chunks.
+        M2RNN carries one ``[N, K, V]`` matrix per head plus a causal conv
+        cache that must be carried across chunks. HOPE, the other matrix-state
+        target, has five memories per head and two pieces of token history, so
+        it has its own :meth:`_run_hope_layer_parallel`.
 
         Args:
             layer_idx: index of the outer layer.
-            rnn_layer: the layer module (M2RNNLayer or HOPELayer).
+            rnn_layer: the M2RNNLayer module.
             layer_input: [B, T, D]
             boundary_states: [B, M-1, ...] translated boundary memories.
             initial_state: optional initial states.
@@ -812,10 +936,9 @@ class ParallelRNNTrainer(nn.Module):
         """
         batch, seq_len, _ = layer_input.shape
         num_heads = getattr(rnn_layer, "num_heads", self.num_heads)
-        # Ask the layer for its own state geometry so M2RNN's [H, K, V] and
-        # HOPE's stacked [H, 5, N, N] both work without a type check here.
-        # A layer that exposes none keeps the translator's own geometry,
-        # which is the same tensor these boundaries came from.
+        # Ask the layer for its own state geometry rather than hard-coding
+        # M2RNN's [H, K, V]. A layer that exposes none keeps the translator's own
+        # geometry, which is the same tensor these boundaries came from.
         shape = getattr(rnn_layer, "stacked_state_shape", None)
         mem_shape = tuple(shape()) if callable(shape) else tuple(boundary_states.shape[2:])
         if mem_shape[0] != num_heads:
@@ -828,14 +951,11 @@ class ParallelRNNTrainer(nn.Module):
             layer_input, self.chunk_size
         )
 
-        # Chunk 0's init comes from the layer itself, not the translator. Which
-        # tensor that is depends on the target: a matrix target that seeds its
-        # memories from learned parameters (HOPE) would lose the entire
-        # self-referential gradient chain to a zero start, since a zero M_v
-        # retrieves v_t = 0 and so has no gradient. Targets whose recurrence is
-        # well defined at zero (M2RNN) keep the zero start, matching the
+        # Chunk 0's init comes from the layer itself, not the translator, when a zero
+        # start would break its gradient chain. M2RNN's recurrence is well
+        # defined at zero, so it keeps the cheaper zero start, matching the
         # sequential path.
-        if self.target_type in MATRIX_TARGET_TYPES and self._layer_seeds_from_params(rnn_layer):
+        if self._layer_seeds_from_params(rnn_layer):
             init = getattr(rnn_layer, "init_state", None)
             if not callable(init):
                 raise TypeError(f"{type(rnn_layer).__name__} must implement init_state")
@@ -859,7 +979,7 @@ class ParallelRNNTrainer(nn.Module):
             num_chunks * batch, *mem_shape
         )
 
-        cache_key = "conv_cache" if self.target_type == "m2rnn" else "q"
+        cache_key = "conv_cache"
         chunk_cache: torch.Tensor | None = None
         if initial_state is not None:
             extra = initial_state[layer_idx].extra
@@ -892,22 +1012,11 @@ class ParallelRNNTrainer(nn.Module):
         extra = {cache_key: chunk_cache} if chunk_cache is not None else None
         chunk_state = RNNState(hidden=chunk_initial_states, extra=extra)
 
-        # HOPE's target is self-generated (Eq. 95), so its inner memories only
-        # reach the output through Eq. 90's chunk-start evaluation point: the
-        # signal ``o_t`` reads ``M_mem`` alone, and with a single evaluation
-        # point per chunk the frozen memory equals the running one and the inner
-        # memories contribute exactly nothing. Passing the row's own length
-        # (each batched row here is one chunk) would therefore leave k/v/eta/
-        # alpha untrained, so the inner chunk must be strictly shorter.
-        # ``target_chunk_size`` lets that inner split be configured; it defaults
-        # to the scaffold's chunk size, which degenerates to the sequential form.
-        target_kwargs = (
-            {"chunk_size": self.hope_chunk_size}
-            if self.target_type == "hope" and self.hope_chunk_size
-            else {}
-        )
+        # HOPE routes to _run_hope_layer_parallel, so only M2RNN reaches here.
+        # Its inner chunk is the scaffold chunk, which degenerates to the
+        # sequential form; Eq. 90's frozen targets are a HOPE-only concern.
         chunk_output, chunk_final_state = rnn_layer.forward(  # type: ignore[misc]
-            chunked_input, chunk_state, **target_kwargs
+            chunked_input, chunk_state
         )
 
         layer_output = _reshape_from_chunks(chunk_output, batch, padded_len, num_chunks)

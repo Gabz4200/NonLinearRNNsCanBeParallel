@@ -31,26 +31,31 @@ decomposition, which supplies each chunk's initial memories from a parallel
 scanner.
 
 Eq. 90 and why the inner chunk matters.  The paper's chunkwise form evaluates
-every signal and gradient at the chunk-start memory,
+Eq. 95's self-generated *targets* at the chunk-start memory,
 ``M_{□,C x ceil(t/C)}``, rather than the running one.  That is not merely a
-parallelism device here, it is load-bearing twice over:
+parallelism device here, it is what keeps the cell stable.
 
 * *Stability.*  Because Eq. 95's target is self-generated, the four inner
   memories form a positive feedback loop: a larger ``M_s`` gives a larger
   ``v_hat = M_s v_t``, which enlarges the gradient ``(M_s k - v_hat) k^T`` and
   so enlarges ``M_s`` again.  The decay term is contractive (``alpha < 1``), so
-  only the target term runs away, and the loop is superlinear.  Evaluated on the
-  running memory it diverges to NaN within ~13 optimizer steps at two layers,
-  growing geometrically (1e-1 -> 1e+0 -> 1e+2 -> 1e+8 -> 1e+34).  Freezing the
+  only the target term runs away, and the loop is superlinear.  Freezing the
   evaluation point at the chunk start removes the self-reference and leaves the
   update intact.
-* *Trainability.*  ``o_t`` reads ``M_mem`` alone, so in the plain sequential
-  form a perturbed inner memory changes the output by *exactly* zero: the inner
-  memories are structurally inert.  They become observable only through Eq. 90's
-  chunk-start evaluation point.  Consequently ``parallel.target_chunk_size``
-  must be strictly below the scaffold ``chunk_size``; equal to it, Eq. 90
-  degenerates to the sequential form and ``k``/``v``/``eta``/``alpha`` receive
-  exactly zero gradient.
+* *Scope.*  Everything else -- ``k_t``, ``v_t``, ``eta_t``, ``alpha_t``, the
+  retrieval ``o_t``, and the state each memory is updated from -- is read at the
+  *running* memory.  Reading those at the chunk start as well would leave the
+  inner memories structurally inert: ``o_t`` reads ``M_mem`` alone, so a
+  perturbed inner memory would change the sequential output by exactly zero and
+  those four matrices would receive no gradient at all.  A checkpoint trained
+  that way carries them frozen at their init scale and the cell degenerates to
+  the memoryless ``o_t = M_mem q_t`` projection.
+
+Because the signals run off the running memory, ``chunk_size=None`` and
+:meth:`step` are the same function, which is what lets a trained checkpoint
+decode coherently.  ``parallel.target_chunk_size`` must be strictly below the
+scaffold ``chunk_size``; equal to it there is a single evaluation point and
+Eq. 90 buys nothing over the sequential form.
 
 :meth:`forward` takes ``chunk_size`` for that reason and defaults to the plain
 sequential form, which is what :meth:`step` always runs, so decoding token by
@@ -180,6 +185,11 @@ class HOPELayer(nn.Module):
 
         self.alpha_logit = nn.Parameter(torch.full((num_heads,), logit(alpha_init)))
         self.eta_logit = nn.Parameter(torch.zeros(num_heads))
+        # Scales the memory's contribution to the retention gate. alpha's bias
+        # sits near logit(0.99), where sigmoid is saturated, so without an
+        # explicit gain the memory reaches alpha with almost no gradient.
+        # Nonzero at init: a zero gain would itself zero alpha_memory's gradient.
+        self.alpha_gain = nn.Parameter(torch.ones(num_heads))
 
         # Each memory is a learned square matrix per head. They must NOT start
         # at zero: with M_v = 0 the retrieved v_t is 0, so M_mem's target is 0
@@ -274,10 +284,22 @@ class HOPELayer(nn.Module):
         v_t = retrieve(mem[2], x_heads)
 
         # eta and alpha are scalars per head, so they pool over the memory width.
-        eta_raw = retrieve(mem[3], x_heads).mean(dim=-1, keepdim=True)
-        alpha_raw = retrieve(mem[4], x_heads).mean(dim=-1, keepdim=True)
+        # Sum rather than mean: averaging N=16 components cancels most of the
+        # signal and shrinks eta/alpha gradients by that factor, which is enough
+        # to leave the retention gate effectively frozen. The 1/sqrt(N) scaling
+        # keeps the pooled magnitude comparable to a single component.
+        scale = self.mem_dim**-0.5
+        eta_raw = retrieve(mem[3], x_heads).sum(dim=-1, keepdim=True) * scale
+        alpha_raw = retrieve(mem[4], x_heads).sum(dim=-1, keepdim=True) * scale
         eta_t = self.eta_scale * torch.sigmoid(eta_raw + self.eta_logit.view(1, -1, 1))
-        alpha_t = torch.sigmoid(alpha_raw + self.alpha_logit.view(1, -1, 1))
+        # alpha's bias starts at logit(alpha_init) ~ 4.6, where sigmoid is
+        # saturated and its derivative is ~0.01, so the memory's contribution to
+        # the retention gate arrives both tiny and with almost no gradient. A
+        # learnable per-head gain on the retrieval restores the gradient while
+        # alpha_init still sets the starting retention.
+        alpha_t = torch.sigmoid(
+            self.alpha_logit.view(1, -1, 1) + self.alpha_gain.view(1, -1, 1) * alpha_raw
+        )
         return k_t, v_t, eta_t.unsqueeze(-1), alpha_t.unsqueeze(-1)
 
     def _recurrence(
@@ -285,45 +307,47 @@ class HOPELayer(nn.Module):
         mem: list[torch.Tensor],
         x_t: torch.Tensor,
         q_t: torch.Tensor,
-        chunk_mem: list[torch.Tensor] | None = None,
+        frozen_mem: list[torch.Tensor] | None = None,
     ) -> tuple[list[torch.Tensor], torch.Tensor]:
         """Advance all five memories one token; return new memories and ``o_t``.
 
         Args:
-            mem: memories carried within the current chunk, i.e. the running
-                state of Eq. 96's recurrent form.
+            mem: the running memory, i.e. Eq. 96's recurrent state.
             x_t: input at this token, [B, D_in].
             q_t: normalized query at this token, [B, H, N].
-            chunk_mem: Eq. 90's ``M_{□,C x ceil(t/C)}``, the memory at the
-                start of the enclosing chunk.  When given, the signals and the
-                gradient are evaluated against this frozen memory while the
-                returned state still carries ``mem`` forward, which is what
-                makes the step parallelizable across a chunk.  None keeps the
+            frozen_mem: Eq. 90's ``M_{□,C x ceil(t/C)}``, the memory at the
+                start of the enclosing chunk.  When given it supplies the
+                self-generated regression *targets* only.  None keeps the
                 plain sequential form.
 
         Returns:
             The updated memories and the retrieved ``o_t``.
         """
-        # Eq. 90 evaluates every signal and gradient at the chunk-start memory,
-        # not the running one. Without this the inner memories run away: their
-        # target is self-generated (Eq. 95), so a larger M_s gives a larger
-        # v_hat = M_s v_t, which enlarges the gradient (M_s k - v_hat) k^T and
-        # so enlarges M_s again. The loop is superlinear and diverges within a
-        # couple of dozen tokens. Freezing the evaluation point removes the
-        # self-reference while leaving the update itself intact.
-        eval_mem = mem if chunk_mem is None else chunk_mem
+        # Every signal and every update is evaluated at the running memory, so
+        # the cell is genuinely recurrent: M_mem at t-1 depends on the inner
+        # memories at t-2, and a perturbed inner memory moves o_t.  This is the
+        # path :meth:`step` always takes, which is what makes training and
+        # decoding the same function.
+        #
+        # Eq. 95's target is the one exception.  Because v_hat = M_s v_t is
+        # read back out of the same memory being updated, a larger M_s gives a
+        # larger v_hat, which enlarges the gradient (M_s k - v_hat) k^T and so
+        # enlarges M_s again -- a superlinear loop.  Freezing just the target
+        # removes that feedback while leaving the update itself intact, so
+        # HOPE trains stably and the inner memories stay observable.
+        target_mem = mem if frozen_mem is None else frozen_mem
 
-        k_t, v_t, eta_t, alpha_t = self._signals(self._heads(x_t), eval_mem)
+        k_t, v_t, eta_t, alpha_t = self._signals(self._heads(x_t), mem)
 
         # Retrieve before updating, so o_t reflects M_mem at t-1 (Eq. 94).
-        o_t = retrieve(eval_mem[0], q_t)
+        o_t = retrieve(mem[0], q_t)
 
-        new_mem = [advance(eval_mem[0], k_t, v_t, eta_t, alpha_t, self.objective)]
+        new_mem = [advance(mem[0], k_t, v_t, eta_t, alpha_t, self.objective)]
         # Self-generated targets (Eq. 95): each inner memory writes toward its
         # own retrieval of v_t rather than toward v_t itself.
         for idx in range(1, len(HOPE_MEMORIES)):
-            v_hat = retrieve(eval_mem[idx], v_t)
-            new_mem.append(advance(eval_mem[idx], k_t, v_hat, eta_t, alpha_t, self.objective))
+            v_hat = retrieve(target_mem[idx], v_t)
+            new_mem.append(advance(mem[idx], k_t, v_hat, eta_t, alpha_t, self.objective))
         return new_mem, o_t
 
     def _cms_lag_max(self) -> int:
@@ -421,9 +445,9 @@ class HOPELayer(nn.Module):
         step_chunk = t_len if not chunk_size or chunk_size >= t_len else chunk_size
         for start in range(0, t_len, step_chunk):
             end = min(start + step_chunk, t_len)
-            chunk_mem = mem
+            frozen_mem = mem
             for step in range(start, end):
-                mem, o_t = self._recurrence(mem, x[:, step], q[:, step], chunk_mem)
+                mem, o_t = self._recurrence(mem, x[:, step], q[:, step], frozen_mem)
                 out_t, cms_cache = self._project_token(o_t, cms_cache)
                 outs.append(out_t)
 

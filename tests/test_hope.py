@@ -14,7 +14,7 @@ import pytest
 import torch
 from torch import nn
 
-from nonlinearrnnscanbeparallel.models.base import RNNState
+from nonlinearrnnscanbeparallel.models.base import RNNState, RNNStateList
 from nonlinearrnnscanbeparallel.models.hope import (
     HOPE,
     HOPE_MEMORIES,
@@ -27,6 +27,7 @@ from nonlinearrnnscanbeparallel.models.hope_memory import (
     logit,
     retrieve,
 )
+from nonlinearrnnscanbeparallel.models.nano_rnn import NanoRNN
 from nonlinearrnnscanbeparallel.models.parallel_wrapper import (
     ParallelRNNTrainer,
     _layer_memory_shape,
@@ -225,9 +226,9 @@ def test_when_stepping_then_matches_full_forward(levels: int, period: int, taps:
             stepped.append(out_t)
         full, full_state = layer(x, chunk_size=None)
 
-        # Eq. 90's frozen-evaluation form, driven directly with the same q
-        # forward computes. With a single chunk the frozen memory and the
-        # running memory coincide, so this must reproduce forward exactly.
+        # Eq. 90's frozen-target form, driven directly with the same q forward
+        # computes. With a single chunk the frozen memory and the running memory
+        # coincide, so this must reproduce forward exactly.
         init = layer.init_state(2, cpu)
         init_mem = layer._mem_from_state(init)
         q, _ = layer._q(x, cast(dict, init.extra)["q"])
@@ -235,7 +236,7 @@ def test_when_stepping_then_matches_full_forward(levels: int, period: int, taps:
         cms = cast(dict, init.extra)["cms"]
         outputs = []
         for t in range(x.shape[1]):
-            # One chunk: the frozen memory is the memory at t=0 throughout.
+            # One chunk: the frozen target memory is the memory at t=0 throughout.
             mem, o_t = layer._recurrence(mem, x[:, t], q[:, t], init_mem)
             out_t, cms = layer._project_token(o_t, cms)
             outputs.append(out_t + x[:, t])
@@ -283,12 +284,14 @@ def test_when_backpropagating_then_all_memory_gradients_are_finite_and_live() ->
         assert grad.abs().sum() > 0, f"{name} gradient is identically zero"
 
 
-def test_when_sequential_then_inner_memories_do_not_reach_the_output() -> None:
-    """Eq. 94 reads M_mem alone, so the inner memories are inert sequentially.
+def test_when_sequential_then_inner_memories_reach_the_output() -> None:
+    """The cell must be genuinely recurrent, in both training and inference.
 
-    This is the reason Eq. 90 exists: the chunk-start memory is what makes the
-    inner memories observable, and it is why chunkwise training is not merely
-    an optimization of the sequential form but a different model.
+    ``o_t = M_mem,t-1(q_t)`` reads ``M_mem`` alone, so the inner memories only
+    reach the output by changing ``M_mem`` on the next token. That path runs in
+    :meth:`HOPELayer.step` (what generation uses) and must run in
+    ``chunk_size=None`` too, otherwise training and decoding are different
+    functions and the inner memories never train.
     """
     torch.manual_seed(0)
     layer = HOPELayer(hidden_dim=32, num_heads=4, mem_dim=8)
@@ -299,13 +302,36 @@ def test_when_sequential_then_inner_memories_do_not_reach_the_output() -> None:
     perturbed[:, :, 1:] += 0.5
     shifted = RNNState(hidden=perturbed, extra=dict(init.extra or {}))
 
-    sequential, _ = layer(x, init, chunk_size=None)
-    shifted_out, _ = layer(x, shifted, chunk_size=None)
-    torch.testing.assert_close(sequential, shifted_out)
+    with torch.no_grad():
+        sequential, _ = layer(x, init, chunk_size=None)
+        shifted_sequential, _ = layer(x, shifted, chunk_size=None)
+        chunked, _ = layer(x, init, chunk_size=4)
+        shifted_chunked, _ = layer(x, shifted, chunk_size=4)
 
-    chunked, _ = layer(x, init, chunk_size=4)
-    shifted_chunked, _ = layer(x, shifted, chunk_size=4)
+    assert (sequential - shifted_sequential).abs().max() > 0, (
+        "the sequential form must let a perturbed inner memory move the output"
+    )
     assert (chunked - shifted_chunked).abs().max() > 0, "Eq. 90 must expose the inner memories"
+
+
+def test_when_sequentially_training_then_every_memory_receives_gradient() -> None:
+    """All five memories must be live without any chunking.
+
+    The inner memories reached the output only through Eq. 90's chunk-start
+    evaluation, so the sequential form left them with exactly zero gradient and
+    a trained checkpoint kept them frozen at their init scale. Reading every
+    signal at the running memory is what makes them trainable.
+    """
+    torch.manual_seed(0)
+    layer = HOPELayer(hidden_dim=32, num_heads=4, mem_dim=8)
+
+    layer(torch.randn(2, 12, 32), chunk_size=None)[0].pow(2).mean().backward()
+
+    grads = {n: p.grad for n, p in layer.named_parameters() if n.endswith("_memory")}
+    assert len(grads) == len(HOPE_MEMORIES)
+    for name, grad in grads.items():
+        assert grad is not None, f"{name} received no gradient"
+        assert grad.abs().sum() > 0, f"{name} gradient is identically zero"
 
 
 def test_when_cms_taps_is_zero_then_raises() -> None:
@@ -468,6 +494,114 @@ def _hope_wrapper(
     )
 
 
+def test_when_running_a_hope_layer_then_it_uses_its_own_parallel_path() -> None:
+    """HOPE must not ride the M2RNN path, which is shaped for one matrix per head."""
+    wrapper = _hope_wrapper(chunk_size=8, target_chunk_size=4)
+    layer, _ = wrapper._get_layer_pair(0)
+    layer_input = torch.randn(2, 16, 32)
+    boundaries = torch.randn(2, 1, 4, len(HOPE_MEMORIES), 8, 8)
+
+    def _boom(*args: object, **kwargs: object) -> tuple[torch.Tensor, RNNState]:
+        raise AssertionError("HOPE must not be routed through the M2RNN path")
+
+    original = wrapper._run_m2rnn_layer_parallel
+    wrapper._run_m2rnn_layer_parallel = _boom  # type: ignore[method-assign]
+    try:
+        out, state = wrapper._run_hope_layer_parallel(0, layer, layer_input, boundaries, None)
+    finally:
+        wrapper._run_m2rnn_layer_parallel = original  # type: ignore[method-assign]
+
+    assert out.shape == (2, 16, 32)
+    assert state.hidden.shape == (2, 4, len(HOPE_MEMORIES), 8, 8)
+    assert torch.isfinite(out).all()
+
+
+def test_when_training_parallel_then_memories_move_off_their_init_scale() -> None:
+    """The inner memories must actually train, not sit at their init scale.
+
+    This is the defect that made generation degenerate: with every signal read
+    at the frozen chunk-start memory, the inner memories received no gradient,
+    a trained checkpoint kept them at the init std of 0.02, and the cell
+    collapsed to the memoryless ``o_t = M_mem q_t`` projection.
+    """
+    torch.manual_seed(0)
+    wrapper = _hope_wrapper(chunk_size=8, target_chunk_size=4)
+    wrapper.train()
+    layer, _ = wrapper._get_layer_pair(0)
+    before = {
+        n: p.detach().clone()
+        for n, p in layer.named_parameters()
+        if n.endswith("_memory") and not n.startswith("mem_")
+    }
+    assert before, "no inner memories found"
+
+    optimizer = torch.optim.AdamW(wrapper.parameters(), lr=1e-2)
+    ids = torch.randint(0, 17, (2, 32))
+    for _ in range(15):
+        loss = wrapper(ids).pow(2).mean()
+        optimizer.zero_grad()
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(wrapper.parameters(), 1.0)
+        optimizer.step()
+
+    moved = [
+        name
+        for name, start in before.items()
+        if torch.allclose(dict(layer.named_parameters())[name], start)
+    ]
+    assert not moved, f"inner memories did not move from init: {moved}"
+
+
+def test_when_eta_and_alpha_pool_over_the_memory_width_then_their_gradients_survive() -> None:
+    """The retention and learning-rate gates must not lose their gradient.
+
+    Two things used to starve them: pooling with ``mean`` over the N-wide memory
+    cancels most of the signal, and ``alpha``'s bias sits at ``logit(0.99)``
+    where sigmoid's derivative is ~0.01. Together they left ``eta_memory`` and
+    ``alpha_memory`` with gradients five orders of magnitude below
+    ``mem_memory``, so the memory never accumulated anything.
+    """
+    torch.manual_seed(0)
+    layer = HOPELayer(hidden_dim=64, num_heads=4, mem_dim=16)
+
+    layer(torch.randn(4, 64, 64), chunk_size=8)[0].pow(2).mean().backward()
+
+    grads = {n: p.grad for n, p in layer.named_parameters() if n.endswith("_memory")}
+    assert all(g is not None for g in grads.values()), "a memory got no gradient at all"
+    norms = {n: float(g.norm()) for n, g in grads.items() if g is not None}
+    reference = norms["mem_memory"]
+    for name in ("k_memory", "v_memory", "eta_memory", "alpha_memory"):
+        ratio = norms[name] / reference
+        assert ratio > 1e-4, (
+            f"{name} gradient is {ratio:.2e} of mem_memory's; the gate cannot learn"
+        )
+
+
+def test_when_evaluating_then_wrapper_matches_the_target_step() -> None:
+    """Training and decoding must be the same function after the fix.
+
+    A parallel-trained HOPE checkpoint is only usable if the sequential path
+    ``generate.py`` runs reproduces what training optimized. Both take the
+    running memory, so they agree.
+    """
+    torch.manual_seed(0)
+    wrapper = _hope_wrapper(chunk_size=8, target_chunk_size=4)
+    wrapper.eval()
+    target = cast(NanoRNN, wrapper.target)
+    ids = torch.randint(0, 17, (2, 24))
+
+    with torch.no_grad():
+        state: RNNStateList | None = None
+        stepped = []
+        for t in range(ids.shape[1]):
+            out_t, state = target.step(ids[:, t], state)
+            stepped.append(out_t)
+        rollout = torch.stack(stepped, dim=1)
+        sequential, _ = target(ids, None)
+
+    torch.testing.assert_close(rollout, sequential, atol=1e-4, rtol=1e-4)
+
+
 def test_when_inferring_target_type_then_hope_is_a_matrix_target() -> None:
     """HOPE must route to the matrix-state branch, not the vector one."""
     wrapper = _hope_wrapper()
@@ -620,10 +754,11 @@ def test_when_parallel_chunked_then_every_layer_receives_memory_gradient() -> No
     placeholder silently drops the whole upper stack from optimization, so each
     layer must be seeded with its own learned memories.
 
-    ``target_chunk_size`` must be strictly below the scaffold chunk: HOPE's
-    inner memories only reach the output through Eq. 90's chunk-start
-    evaluation point, so with one evaluation point per chunk they receive
-    exactly zero gradient.
+    ``target_chunk_size`` freezes Eq. 95's self-generated targets at the chunk
+    start, which is what keeps the cell from running away; the signals
+    themselves are read at the running memory, so every memory trains either
+    way. It must still be strictly below the scaffold chunk, or it degenerates
+    to the plain sequential form and buys nothing.
     """
     torch.manual_seed(0)
     wrapper = _hope_wrapper(chunk_size=8, target_chunk_size=4)
@@ -644,27 +779,31 @@ def test_when_parallel_chunked_then_every_layer_receives_memory_gradient() -> No
         assert not dead, f"layer {index} memories got no gradient: {dead}"
 
 
-def test_when_target_chunk_size_is_omitted_then_inner_memories_stay_dead() -> None:
-    """Defaults must not silently train only M_mem.
+def test_when_target_chunk_size_is_omitted_then_inner_memories_still_train() -> None:
+    """The default must not silently train only M_mem.
 
-    With one evaluation point per chunk, Eq. 90 degenerates to the sequential
-    form, where the inner memories provably do not affect the output. Pinning
-    that makes the requirement for ``target_chunk_size`` visible.
+    Freezing Eq. 95's self-generated targets at the chunk start is what keeps
+    HOPE stable, but it no longer decides whether the inner memories train: the
+    signals are read at the running memory either way. So the default, and an
+    explicit inner chunk, must both leave all five memories live.
     """
     torch.manual_seed(0)
-    wrapper = _hope_wrapper(chunk_size=8)
-    wrapper.train()
 
-    wrapper(torch.randint(0, 17, (2, 32))).pow(2).mean().backward()
-    layer, _ = wrapper._get_layer_pair(0)
-    inner = {
-        n: (0.0 if p.grad is None else float(p.grad.abs().sum()))
-        for n, p in layer.named_parameters()
-        if n.endswith("_memory") and not n.startswith("mem_")
-    }
+    for wrapper in (_hope_wrapper(chunk_size=8), _hope_wrapper(chunk_size=8, target_chunk_size=4)):
+        wrapper.train()
+        wrapper(torch.randint(0, 17, (2, 32))).pow(2).mean().backward()
+        layer, _ = wrapper._get_layer_pair(0)
+        inner = {
+            n: (0.0 if p.grad is None else float(p.grad.abs().sum()))
+            for n, p in layer.named_parameters()
+            if n.endswith("_memory") and not n.startswith("mem_")
+        }
 
-    assert inner, "no inner memories found to check"
-    assert all(value == 0.0 for value in inner.values())
+        assert inner, "no inner memories found to check"
+        dead = [n for n, value in inner.items() if value == 0.0]
+        assert not dead, (
+            f"target_chunk_size={wrapper.hope_chunk_size} left memories untrained: {dead}"
+        )
 
 
 def test_when_wrapper_is_constructed_then_upper_layers_are_seeded_not_zeroed() -> None:
